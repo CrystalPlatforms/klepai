@@ -247,7 +247,7 @@ fn delete_removes_metadata_and_library_files() {
 }
 
 #[test]
-fn enabled_size_accounts_only_for_enabled_skills() {
+fn size_bytes_tracks_each_skill_independently() {
     let dir = temp_dir("size-accounting");
     let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
@@ -259,26 +259,20 @@ fn enabled_size_accounts_only_for_enabled_skills() {
     std::fs::write(&second, "Second body.").expect("fixture should write");
     let large = skills.import(&store, &second).expect("import should succeed");
 
-    assert_eq!(
-        skills.enabled_total_size(&store).expect("size should compute"),
-        0,
-        "nothing enabled yet"
-    );
-
+    // Sizes are per-skill metadata for the Settings list. There is no total
+    // budget: prompts carry the index only (issue #34), so enabling skills
+    // sums nothing and caps nothing.
+    assert_eq!(small.size_bytes, "First body.".len() as i64);
     skills.set_enabled(&store, small.id, true).expect("enable");
-    assert_eq!(
-        skills.enabled_total_size(&store).expect("size should compute"),
-        "First body.".len() as i64
-    );
-
     skills.set_enabled(&store, large.id, true).expect("enable");
     assert_eq!(
-        skills.enabled_total_size(&store).expect("size should compute"),
-        ("First body.".len() + "Second body.".len()) as i64
+        store.get_skill(small.id).expect("reload").size_bytes,
+        "First body.".len() as i64
     );
-
-    // The cap constant is the owner's chosen budget: 32 KiB.
-    assert_eq!(klepai_lib::skills::SIZE_CAP_BYTES, 32 * 1024);
+    assert_eq!(
+        store.get_skill(large.id).expect("reload").size_bytes,
+        "Second body.".len() as i64
+    );
 }
 
 #[test]

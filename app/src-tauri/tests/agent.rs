@@ -403,7 +403,7 @@ impl AgentAdapter for PromptSpy {
 
 #[tokio::test]
 async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
-    use klepai_lib::skills::{prompt_block, SkillStore};
+    use klepai_lib::skills::{cli_index_block, SkillStore};
     use klepai_lib::store::Store;
 
     let dir = std::env::temp_dir().join(format!(
@@ -415,20 +415,23 @@ async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
     let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
-    // The composition send_agent_message performs: the enabled block (plus a
-    // one-shot, none here) prepended to the prompt the CLI receives.
-    let import = |name: &str, body: &str| {
+    // The composition send_agent_message performs: the enabled index block
+    // (plus a one-shot, none here) prepended to the prompt the CLI receives.
+    let import = |name: &str, description: &str, body: &str| {
         let source = dir.join(format!("{name}.md"));
-        std::fs::write(&source, format!("---\nname: {name}\n---\n\n{body}"))
-            .expect("fixture should write");
+        std::fs::write(
+            &source,
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"),
+        )
+        .expect("fixture should write");
         skills.import(&store, &source).expect("import should succeed").id
     };
-    let enabled = import("formatter", "Format every output as a table.");
-    let disabled = import("censor", "Never mention the deadline.");
+    let enabled = import("formatter", "formats output", "Format every output as a table.");
+    let disabled = import("censor", "keeps secrets", "Never mention the deadline.");
     skills.set_enabled(&store, enabled, true).expect("enable");
     skills.set_enabled(&store, disabled, false).expect("disable");
 
-    let block = prompt_block(&skills.enabled_prompts(&store).expect("prompts"));
+    let block = cli_index_block(&skills.enabled_cards(&store).expect("cards"));
     let prompt = klepai_lib::agent::prompt_with_skills("Fix the failing test.", &block);
 
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -450,14 +453,19 @@ async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
     .expect("spy run should complete");
 
     let handed_off = captured.lock().expect("spy lock").clone();
+    let library_path = dir.join("skills").join("formatter.md");
     assert!(
-        handed_off.contains("## Active skills")
-            && handed_off.contains("### formatter")
-            && handed_off.contains("Format every output as a table."),
-        "enabled skills ride in the prompt the adapter hands to the CLI"
+        handed_off.contains("## Skills")
+            && handed_off.contains("- formatter: formats output")
+            && handed_off.contains(&format!("file: {}", library_path.display())),
+        "enabled skills ride as index cards with their library file path"
     );
     assert!(
-        !handed_off.contains("deadline"),
+        !handed_off.contains("as a table"),
+        "the skill's content enters only when the CLI reads the file itself"
+    );
+    assert!(
+        !handed_off.contains("deadline") && !handed_off.contains("censor"),
         "disabled skills never reach the handoff"
     );
     assert!(

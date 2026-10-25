@@ -1,18 +1,20 @@
-//! Skills injection into server-model request assembly (issue #19 S3) and
-//! the one-shot invoked skill (issue #20 S4).
+//! Skills injection into server-model request assembly (issue #19 S3), the
+//! one-shot invoked skill (issue #20 S4), and the on-demand rebuild
+//! (issue #34).
 //!
 //! Assumptions these tests encode:
 //! - `resolve_target` + `apply_skill_injection` is the exact mapping both
 //!   server-model send paths use (`stream_reply` for Natural, `run_tool_loop`
 //!   for Agent mode with a server brain) — asserting on its output asserts
 //!   on the real pipeline.
-//! - Enabled skills ride in listing order; one that would push the running
-//!   total past `SIZE_CAP_BYTES` is skipped (a later smaller one can still
-//!   fit); the injected block never exceeds the cap.
+//! - Prompts carry only the enabled set's index cards (name + description +
+//!   how to read). Skill CONTENT never rides on a request: a server brain
+//!   with tools pulls it through the `read_skill` tool. There is no size
+//!   budget — the index stays light however big the skills are.
 //! - A one-shot invocation works only on an ENABLED skill — a disabled one
 //!   is invisible to the palette and refused by the backend (owner decision,
 //!   2026-10-17). An invoked skill rides on exactly ONE request: the next
-//!   request without an id carries none.
+//!   request without an id carries the index again, not the content.
 //! - With no skills in play the system prompt is untouched — `None` stays
 //!   `None`, a user prompt stays byte-identical.
 
@@ -20,7 +22,7 @@ use std::path::PathBuf;
 
 use klepai_lib::commands::{apply_skill_injection, resolve_target};
 use klepai_lib::gateway::ChatOptions;
-use klepai_lib::skills::{SkillStore, SIZE_CAP_BYTES};
+use klepai_lib::skills::SkillStore;
 use klepai_lib::store::Store;
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -70,7 +72,7 @@ fn injected_prompt(store: &Store, skills: &SkillStore, conv: i64, skill_id: Opti
 }
 
 #[test]
-fn enabled_skill_content_reaches_the_system_prompt_and_disabled_does_not() {
+fn enabled_skill_index_reaches_the_prompt_and_content_stays_out() {
     let dir = temp_dir("enabled-disabled");
     let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
@@ -93,22 +95,24 @@ fn enabled_skill_content_reaches_the_system_prompt_and_disabled_does_not() {
 
     let prompt = options.system_prompt.expect("skills block should create a prompt");
     assert!(
-        prompt.contains("Always greet the user in Latin."),
-        "enabled skill content must ride in the system prompt"
+        prompt.contains("## Skills")
+            && prompt.contains("- greeter: greeter does things")
+            && prompt.contains("read_skill"),
+        "the enabled skill travels as an index card naming the read_skill tool"
     );
     assert!(
-        !prompt.contains("whispers"),
+        !prompt.contains("Latin"),
+        "skill content must not ride in the system prompt — the model reads it on demand"
+    );
+    assert!(
+        !prompt.contains("whisperer") && !prompt.contains("whispers"),
         "a disabled skill must never reach the request"
-    );
-    assert!(
-        prompt.contains("## Active skills") && prompt.contains("### greeter"),
-        "the skill travels as a named section"
     );
 }
 
 #[test]
-fn request_assembly_respects_the_size_cap() {
-    let dir = temp_dir("cap");
+fn the_index_stays_light_no_matter_how_big_the_skills_are() {
+    let dir = temp_dir("no-cap");
     let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
     let conv = chat_ready_conversation(&store);
@@ -123,31 +127,23 @@ fn request_assembly_respects_the_size_cap() {
     let options = injected_prompt(&store, &skills, conv, None);
     let prompt = options.system_prompt.expect("skills block expected");
 
-    // Order inside the library listing must not matter: the small skill
-    // always fits, the two 20 KiB ones can never ride together, and the
-    // injected total never crosses the cap.
+    // There is no budget to overflow: every enabled skill lands in the
+    // index whatever its size, and no content rides at all — the model
+    // pulls a skill's full text through read_skill when it needs it.
+    for name in ["big", "also-big", "small"] {
+        assert!(
+            prompt.contains(&format!("- {name}: {name} does things")),
+            "{name} is indexed regardless of size"
+        );
+    }
     assert!(
-        prompt.contains("### small"),
-        "the small skill fits whatever the listing order"
-    );
-    let bigs_in = ["big", "also-big"]
-        .iter()
-        .filter(|name| prompt.contains(&format!("### {name}")))
-        .count();
-    assert_eq!(
-        bigs_in, 1,
-        "exactly one 20 KiB skill fits under the cap, the other is skipped"
-    );
-    let prompts = skills.enabled_prompts(&store).expect("prompts");
-    let content_total: i64 = prompts.iter().map(|p| p.content.len() as i64).sum();
-    assert_eq!(
-        prompts.len(),
-        2,
-        "two skills ride; the one that would overflow is skipped"
+        !prompt.contains("aaaa") && !prompt.contains("bbbb") && !prompt.contains("cccc"),
+        "no skill body rides in the prompt"
     );
     assert!(
-        content_total <= SIZE_CAP_BYTES,
-        "the injected content never exceeds the cap"
+        prompt.len() < 4 * 1024,
+        "the index stays light however big the library grows: {} bytes",
+        prompt.len()
     );
 }
 
@@ -189,11 +185,18 @@ fn a_disabled_skill_is_unavailable_and_an_enabled_one_shot_rides_on_one_request(
         "an enabled invoked skill attaches to its one request"
     );
 
-    // …and the NEXT send without an invocation carries no skill.
-    let next = resolve_target(&store, conv).expect("target should resolve").2;
-    assert_eq!(
-        next.system_prompt, None,
-        "the one-shot must not leak into the following request"
+    // …and the NEXT send without an invocation carries the index again —
+    // translator is still enabled, but its content never leaks forward.
+    let (_, _, mut next) = resolve_target(&store, conv).expect("target should resolve");
+    apply_skill_injection(&store, &skills, &mut next, None).expect("next injection");
+    let prompt = next.system_prompt.expect("the enabled set still indexes");
+    assert!(
+        prompt.contains("## Skills") && prompt.contains("- translator: translator does things"),
+        "the index rides on"
+    );
+    assert!(
+        !prompt.contains("Translate every reply"),
+        "the one-shot content must not leak into the following request"
     );
 }
 

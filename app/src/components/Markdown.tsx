@@ -1,5 +1,5 @@
 import { isValidElement, useRef, useState } from "react";
-import { Check, ChevronRight, Copy } from "lucide-react";
+import { IconCheck, IconChevronRight, IconCopy } from "@/components/ui/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -140,7 +140,7 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
         onClick={copy}
         className="absolute right-1.5 top-1.5 z-10 rounded-md border border-border bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
       >
-        {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
+        {copied ? <IconCheck className="h-3.5 w-3.5 text-primary" /> : <IconCopy className="h-3.5 w-3.5" />}
       </button>
       <pre
         ref={preRef}
@@ -167,7 +167,7 @@ export function ThinkingBlock({ thinking }: { thinking: string }) {
         onClick={() => setOpen((current) => !current)}
         className="flex items-center gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
       >
-        <ChevronRight
+        <IconChevronRight
           aria-hidden
           className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")}
         />

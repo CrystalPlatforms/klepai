@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileText, Info, Loader2, Pencil, PlugZap, Plus, RefreshCw, Terminal, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { IconFileText, IconInfoCircle, IconLoader2, IconPencil, IconPlugConnected, IconPlus, IconRefresh, IconTerminal, IconTool, IconTrash, IconX } from "@/components/ui/icons";
 import { ModePill } from "@/components/ChatPane";
 
 import type { AllowedRule, AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
-import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "@/lib/skillsCap";
+import { formatBytes } from "@/lib/skillSize";
 import {
   defaultUpdaterApi,
   downloadProgressText,
@@ -66,7 +66,7 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
             aria-label="Close settings"
             title="Close"
           >
-            <X className="h-4 w-4" />
+            <IconX className="h-4 w-4" />
           </DialogClose>
         </div>
         <DialogHeader>
@@ -234,9 +234,9 @@ function ServersTab({
                     title="Test connection"
                   >
                     {status.state === "checking" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <IconLoader2 className="h-4 w-4 animate-spin" />
                     ) : (
-                      <PlugZap className="h-4 w-4" />
+                      <IconPlugConnected className="h-4 w-4" />
                     )}
                   </Button>
                   <Button
@@ -247,7 +247,7 @@ function ServersTab({
                     aria-label={`Edit ${server.name}`}
                     title="Edit"
                   >
-                    <Pencil className="h-4 w-4" />
+                    <IconPencil className="h-4 w-4" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -257,7 +257,7 @@ function ServersTab({
                     aria-label={`Delete ${server.name}`}
                     title="Delete"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <IconTrash className="h-4 w-4" />
                   </Button>
                 </div>
               </li>
@@ -268,7 +268,7 @@ function ServersTab({
 
       <div className="flex justify-end">
         <Button size="sm" onClick={() => setEditing("new")}>
-          <Plus className="mr-1 h-4 w-4" />
+          <IconPlus className="mr-1 h-4 w-4" />
           Add server
         </Button>
       </div>
@@ -462,7 +462,7 @@ function ServerFormDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+              {saving && <IconLoader2 className="mr-1 h-4 w-4 animate-spin" />}
               {server ? "Save" : "Add"}
             </Button>
           </DialogFooter>
@@ -485,7 +485,7 @@ const TAB_HINTS: Partial<Record<Tab, { label: string; text: string }>> = {
   },
   skills: {
     label: "About skills",
-    text: "Enabled skills join system prompts in server-model conversations only — they are never sent to Claude Code or Codex.",
+    text: "Enabled skills reach the assistant as a name-and-description list only: a server brain reads the full text with its read_skill tool, Claude Code and Codex open the skill's file from the list. Nothing enters the chat until the assistant reads it, and the `/` palette attaches a skill you pick to one message.",
   },
   defaults: {
     label: "About defaults",
@@ -498,11 +498,14 @@ const TAB_HINTS: Partial<Record<Tab, { label: string; text: string }>> = {
 function TabInfoHint({ label, text }: { label: string; text: string }) {
   return (
     <span className="group relative flex" tabIndex={0} aria-label={label}>
-      <Info className="h-4 w-4 cursor-help text-muted-foreground transition-colors group-hover:text-foreground" />
+      <IconInfoCircle className="h-4 w-4 cursor-help text-muted-foreground transition-colors group-hover:text-foreground" />
       {/* Transparent padding bridges icon and card — no dead zone for the
           pointer; the card itself carries the visible popover styles and
           `select-text` so the copy works. */}
-      <span className="pointer-events-none invisible absolute right-0 top-4 z-50 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+      {/* focus-visible, not focus-within: the dialog autofocuses this span
+          on open, and only a keyboard focus should reveal the hint — a
+          mouse-opened dialog must not pop tooltips on its own. */}
+      <span className="pointer-events-none invisible absolute right-0 top-4 z-50 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100">
         <span className="block pt-3">
           <span
             role="tooltip"
@@ -519,11 +522,11 @@ function TabInfoHint({ label, text }: { label: string; text: string }) {
 /** Icon + label for one allowed-rule kind. */
 const ALLOWED_KIND_META: Record<
   AllowedRule["kind"],
-  { icon: typeof Terminal; label: string }
+  { icon: typeof IconTerminal; label: string }
 > = {
-  command: { icon: Terminal, label: "Command" },
-  file: { icon: FileText, label: "File" },
-  tool: { icon: Wrench, label: "Tool" },
+  command: { icon: IconTerminal, label: "Command" },
+  file: { icon: IconFileText, label: "File" },
+  tool: { icon: IconTool, label: "Tool" },
 };
 
 function AllowedTab({ open }: { open: boolean }) {
@@ -598,7 +601,7 @@ function AllowedTab({ open }: { open: boolean }) {
                   aria-label={`Remove ${display}`}
                   title="Remove"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <IconTrash className="h-4 w-4" />
                 </Button>
               </li>
             );
@@ -692,25 +695,8 @@ function SkillsTab({ open }: { open: boolean }) {
     }
   };
 
-  const totalBytes = enabledTotalSize(skills);
-  const overCap = isOverCap(totalBytes);
-
   return (
     <div className="space-y-3">
-      {overCap && (
-        <div
-          role="alert"
-          className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400"
-        >
-          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            Enabled skills use {formatBytes(totalBytes)} — past the{" "}
-            {formatBytes(SKILL_SIZE_CAP_BYTES)} prompt budget. Disable or trim some to
-            keep requests lean.
-          </span>
-        </div>
-      )}
-
       {skills.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
           <p>No skills yet. Import a .skill package or a markdown instruction file.</p>
@@ -748,7 +734,7 @@ function SkillsTab({ open }: { open: boolean }) {
                   aria-label={`Edit ${skill.name}`}
                   title="Edit content"
                 >
-                  <Pencil className="h-4 w-4" />
+                  <IconPencil className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="ghost"
@@ -758,7 +744,7 @@ function SkillsTab({ open }: { open: boolean }) {
                   aria-label={`Delete ${skill.name}`}
                   title="Delete"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <IconTrash className="h-4 w-4" />
                 </Button>
               </div>
             </li>
@@ -768,7 +754,7 @@ function SkillsTab({ open }: { open: boolean }) {
 
       <div className="flex justify-end">
         <Button size="sm" onClick={() => void importSkill()} disabled={importing}>
-          {importing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Plus className="mr-1 h-4 w-4" />}
+          {importing ? <IconLoader2 className="mr-1 h-4 w-4 animate-spin" /> : <IconPlus className="mr-1 h-4 w-4" />}
           Add skill
         </Button>
       </div>
@@ -923,7 +909,7 @@ function EditSkillDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={loading || saving}>
-              {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+              {saving && <IconLoader2 className="mr-1 h-4 w-4 animate-spin" />}
               Save
             </Button>
           </DialogFooter>
@@ -983,7 +969,7 @@ function SystemPromptTab({ open }: { open: boolean }) {
       <div className="flex items-center justify-end gap-2">
         {saved && <span className="text-xs text-primary">Saved.</span>}
         <Button type="submit" size="sm" disabled={saving}>
-          {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+          {saving && <IconLoader2 className="mr-1 h-4 w-4 animate-spin" />}
           Save
         </Button>
       </div>
@@ -1115,7 +1101,7 @@ function DefaultsTab({ open }: { open: boolean }) {
             </SelectContent>
           </Select>
           {loadingModels && (
-            <RefreshCw className="pointer-events-none absolute right-7 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+            <IconRefresh className="pointer-events-none absolute right-7 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
           )}
         </div>
       </div>
@@ -1245,7 +1231,7 @@ function AboutTab() {
           onClick={() => void checkForUpdates()}
         >
           {updates.kind === "checking" && (
-            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+            <IconLoader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
           )}
           Check for updates
         </Button>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { IconChevronRight } from "@/components/ui/icons";
 
 import { cn } from "@/lib/utils";
 
@@ -25,7 +25,7 @@ export function ActivityBlock({ title, detail, defaultOpen = false }: ActivityBl
         aria-expanded={open}
         className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:text-foreground"
       >
-        <ChevronRight
+        <IconChevronRight
           className={cn(
             "h-3.5 w-3.5 shrink-0 transition-transform duration-150",
             open && "rotate-90"

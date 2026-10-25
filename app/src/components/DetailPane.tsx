@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { Loader2, PanelRightClose } from "lucide-react";
+import { IconLayoutSidebarRightCollapse, IconLoader2 } from "@/components/ui/icons";
 
 import type { AppSettings, Conversation, Message, ModelInfo, Server } from "@/types";
 import {
@@ -89,7 +89,7 @@ function ModelSelect({
         </SelectContent>
       </Select>
       {loading && (
-        <Loader2 className="pointer-events-none absolute right-7 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
+        <IconLoader2 className="pointer-events-none absolute right-7 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
       )}
     </div>
   );
@@ -362,7 +362,7 @@ export function DetailPane({
             aria-label="Hide details"
             title="Hide details"
           >
-            <PanelRightClose />
+            <IconLayoutSidebarRightCollapse />
           </Button>
         </header>
 

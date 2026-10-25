@@ -1,4 +1,4 @@
-import { Copy, Pencil, RefreshCw, Reply, Scissors, Trash2, X } from "lucide-react";
+import { IconArrowBackUp, IconCopy, IconPencil, IconRefresh, IconScissors, IconTrash, IconX } from "@/components/ui/icons";
 
 import type { Message } from "@/types";
 import { isReasoningTitle, parseActivity } from "@/types";
@@ -55,7 +55,7 @@ export function MessageView({
             title="Edit message"
             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            <Pencil className="h-3.5 w-3.5" />
+            <IconPencil className="h-3.5 w-3.5" />
           </button>
         )}
         {showRegenerate && (
@@ -66,7 +66,7 @@ export function MessageView({
             title="Regenerate reply"
             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <IconRefresh className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
@@ -186,26 +186,26 @@ export function MessageView({
       <ContextMenuContent>
         {onEdit && (
           <ContextMenuItem onSelect={onEdit}>
-            <Pencil className="mr-2 h-4 w-4" />
+            <IconPencil className="mr-2 h-4 w-4" />
             Edit
           </ContextMenuItem>
         )}
         {onReply && (
           <ContextMenuItem onSelect={onReply}>
-            <Reply className="mr-2 h-4 w-4" />
+            <IconArrowBackUp className="mr-2 h-4 w-4" />
             Reply
           </ContextMenuItem>
         )}
         {onFork && (
           <ContextMenuItem onSelect={onFork}>
-            <Scissors className="mr-2 h-4 w-4" />
+            <IconScissors className="mr-2 h-4 w-4" />
             Fork from this
           </ContextMenuItem>
         )}
         <ContextMenuItem
           onSelect={() => void navigator.clipboard.writeText(copyText)}
         >
-          <Copy className="mr-2 h-4 w-4" />
+          <IconCopy className="mr-2 h-4 w-4" />
           Copy
         </ContextMenuItem>
         {onDelete && (
@@ -215,7 +215,7 @@ export function MessageView({
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onSelect={onDelete}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
+              <IconTrash className="mr-2 h-4 w-4" />
               Delete
             </ContextMenuItem>
           </>
@@ -249,7 +249,7 @@ export function PendingImages({
             onClick={() => onRemove(index)}
             className="absolute -right-1.5 -top-1.5 rounded-full border border-border bg-background p-0.5 text-muted-foreground hover:text-destructive"
           >
-            <X className="h-3 w-3" />
+            <IconX className="h-3 w-3" />
           </button>
         </div>
       ))}
