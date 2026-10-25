@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#090a09">
+<title>Klepai loader — Reviewing</title>
+<style>
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0}
+body{display:flex;align-items:center;justify-content:center;background:#090a09;color:#f4f3ee;font-family:"ADLaM Display",Arial,sans-serif}
+.preview{display:flex;align-items:center;gap:12px}
+.grid{display:grid;gap:2px;width:max-content;height:max-content}
+.dot{display:block;width:4px;height:4px;background:currentColor}
+.status{color:inherit;font-size:12px;line-height:16px;white-space:nowrap}
+</style>
+</head>
+<body>
+<main class="preview" aria-label="Agent status: Reviewing">
+<div class="grid" id="loader" role="img" aria-label="Reviewing loading animation"></div>
+<span class="status">Reviewing</span>
+</main>
+<script>
+
+const type = "cascade";
+const OFF = 0.15;
+const ON = 1;
+
+function getOpacities(i) {
+  const row = Math.floor(i / 3);
+  const col = i % 3;
+  switch (type) {
+    case "orbit": {
+      const path = [0, 1, 2, 5, 8, 7, 6, 3];
+      if (i === 4) return [OFF, OFF];
+      const idx = path.indexOf(i);
+      const frames = Array.from({ length: 8 }, (_, f) => {
+        const dist = (f - idx + 8) % 8;
+        return dist === 0 ? ON : dist === 1 ? 0.5 : OFF;
+      });
+      return [...frames, frames[0]];
+    }
+    case "braille": {
+      const path = [0, 1, 3, 5, 7, 6, 4, 2];
+      const idx = path.indexOf(i);
+      const frames = Array.from({ length: 8 }, (_, f) => {
+        const dist = (f - idx + 8) % 8;
+        return dist === 0 ? ON : dist === 1 ? 0.5 : OFF;
+      });
+      return [...frames, frames[0]];
+    }
+    case "snake": {
+      const path = [0, 1, 2, 5, 4, 3, 6, 7, 8, 7, 6, 3, 4, 5, 2, 1];
+      const frames = Array.from({ length: 16 }, (_, f) =>
+        path[f] === i ? ON : path[(f - 1 + 16) % 16] === i ? 0.5 : OFF
+      );
+      return [...frames, frames[0]];
+    }
+    case "fill-sweep": {
+      const frames = Array.from({ length: 6 }, (_, s) => s >= col && s <= col + 2 ? ON : OFF);
+      return [...frames, frames[0]];
+    }
+    case "diagonal-swipe": {
+      const dist = row + col;
+      const frames = Array.from({ length: 10 }, (_, s) => s >= dist && s <= dist + 4 ? ON : OFF);
+      return [...frames, frames[0]];
+    }
+    case "pulse": {
+      const center = i === 4;
+      return [center ? ON : OFF, center ? OFF : ON, center ? ON : OFF];
+    }
+    case "columns":
+      return [col === 0 ? ON : OFF, col === 1 ? ON : OFF, col === 2 ? ON : OFF, col === 0 ? ON : OFF];
+    case "wave-rows":
+      return [row === 0 ? ON : OFF, row === 1 ? ON : OFF, row === 2 ? ON : OFF, row === 0 ? ON : OFF];
+    case "checkerboard": {
+      const even = i % 2 === 0;
+      return [even ? ON : OFF, even ? OFF : ON, even ? ON : OFF];
+    }
+    case "scan":
+      return [row === 0 ? ON : OFF, row === 1 ? ON : OFF, row === 2 ? ON : OFF, row === 1 ? ON : OFF, row === 0 ? ON : OFF];
+    case "helix": {
+      const path = [0, 1, 2, 5, 8, 7, 6, 3];
+      if (i === 4) return [OFF, OFF];
+      const idx = path.indexOf(i);
+      const frames = Array.from({ length: 8 }, (_, f) => f === idx || (f + 4) % 8 === idx ? ON : OFF);
+      return [...frames, frames[0]];
+    }
+    case "rain": return [OFF, ON, OFF, OFF, OFF];
+    case "breathe":
+    case "cascade":
+    case "sparkle":
+    default: return [OFF, ON, OFF];
+  }
+}
+
+function getTransition(i) {
+  const row = Math.floor(i / 3);
+  const col = i % 3;
+  switch (type) {
+    case "breathe": {
+      const dist = i === 4 ? 0 : i % 2 === 1 ? 1 : 2;
+      return { duration: 2, delay: dist * 0.2, easing: "ease-in-out" };
+    }
+    case "rain": {
+      const colDelay = [0, 0.4, 0.2][col];
+      return { duration: 1.2, delay: row * 0.2 + colDelay, easing: "linear" };
+    }
+    case "cascade": {
+      const dist = row + col;
+      return { duration: 1.5, delay: dist * 0.2, easing: "ease-in-out" };
+    }
+    case "sparkle":
+      return { duration: 0.8 + (i % 3) * 0.2, delay: (i * 7) % 2, easing: "ease-in-out" };
+    case "pulse": return { duration: 1.5, delay: 0, easing: "ease-in-out" };
+    case "snake": return { duration: 2, delay: 0, easing: "linear" };
+    case "orbit":
+    case "helix":
+    case "fill-sweep":
+    case "braille": return { duration: 1.2, delay: 0, easing: "linear" };
+    case "diagonal-swipe":
+    case "checkerboard":
+    case "scan": return { duration: 1.5, delay: 0, easing: "linear" };
+    case "columns":
+    case "wave-rows": return { duration: 1.2, delay: 0, easing: "linear" };
+    default: return { duration: 1, delay: 0, easing: "linear" };
+  }
+}
+
+const braille = type === "braille";
+const count = braille ? 8 : 9;
+const cols = braille ? 2 : 3;
+const grid = document.getElementById("loader");
+grid.style.gridTemplateColumns = "repeat(" + cols + ", 4px)";
+
+for (let i = 0; i < count; i += 1) {
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  grid.append(dot);
+  const values = getOpacities(i);
+  const keyframes = values.map((opacity, index) => ({
+    opacity,
+    offset: values.length === 1 ? 0 : index / (values.length - 1),
+  }));
+  const timing = getTransition(i);
+  dot.animate(keyframes, {
+    duration: timing.duration * 1000,
+    delay: timing.delay * 1000,
+    easing: timing.easing,
+    iterations: Infinity,
+    fill: "both",
+  });
+}
+
+</script>
+</body>
+</html>

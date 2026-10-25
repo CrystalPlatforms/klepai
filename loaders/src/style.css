@@ -1,0 +1,26 @@
+:root {
+  color-scheme: dark;
+  background: #090a09;
+  font-family: "ADLaM Display", ui-sans-serif, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+html, body { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100vh; background: #090a09; }
+.page { width: min(1120px, 100% - 40px); margin: 0 auto; padding: 28px 0; }
+.gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.loader-preview { display: block; width: 100%; height: 156px; border: 0; background: transparent; }
+
+@media (max-width: 700px) {
+  .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .loader-preview { height: 145px; }
+}
+@media (max-width: 420px) {
+  .page { width: calc(100% - 20px); padding: 10px 0; }
+  .gallery { grid-template-columns: 1fr 1fr; gap: 0; }
+  .loader-preview { height: 130px; }
+}
