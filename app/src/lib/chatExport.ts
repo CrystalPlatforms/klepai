@@ -551,7 +551,10 @@ function buildPdf(title: string, messages: Message[], date: Date): Uint8Array {
 
   // Serialize: 1 catalog, 2 pages, 3 bold font, 4 regular font, then a page
   // object and its content stream per page.
-  const contents = pages.map((p) => p.ops.join("\n"));
+  // Each stream is ONE text object: text-showing operators are only defined
+  // inside BT…ET, and Quartz (Preview) silently skips unwrapped ones — the
+  // result parses fine but renders an all-white page.
+  const contents = pages.map((p) => `BT\n${p.ops.join("\n")}\nET`);
   const pageIds = pages.map((_, i) => 5 + i * 2);
   const objects: string[] = [];
   objects.push(`<< /Type /Catalog /Pages 2 0 R >>`);

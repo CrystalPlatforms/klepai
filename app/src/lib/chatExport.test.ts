@@ -130,6 +130,16 @@ describe("buildExportFile", () => {
     expect(pdf).toContain("(acelnószz)");
   });
 
+  it("wraps page content in a BT…ET text object (Quartz skips unwrapped text)", () => {
+    // Regression: without BT…ET the PDF parsed but Preview rendered an
+    // all-white page — the only symptom, and only in strict viewers.
+    const pdf = new TextDecoder("latin1").decode(
+      buildExportFile("Chat", TINY, "pdf").bytes,
+    );
+    expect(pdf).toContain("stream\nBT\n");
+    expect(pdf).toContain("\nET\nendstream");
+  });
+
   it("flows a long conversation onto multiple PDF pages", () => {
     const long = conversation([
       base({ role: "user", content: Array(400).fill("slowo").join(" ") }),
