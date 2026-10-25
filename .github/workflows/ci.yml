@@ -43,7 +43,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # jsdom 30 needs Node ≥ 24 (util.markAsUncloneable) — vitest forks
+          # workers die on Node 20 with "markAsUncloneable is not a function".
+          node-version: 24
           cache: npm
           cache-dependency-path: app/package-lock.json
 
