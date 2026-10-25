@@ -511,16 +511,61 @@ async fn missing_binary_returns_a_structured_error() {
 
 #[test]
 fn cli_model_detection_lists_real_models() {
-    let codex = klepai_lib::commands::list_cli_models("codex".into()).unwrap();
-    println!("codex models: {codex:?}");
-    assert!(
-        codex.contains(&"gpt-5.6-terra".to_string())
-            && codex.contains(&"gpt-5.6-luna".to_string()),
-        "session history models must be detected: {codex:?}"
-    );
-    let claude = klepai_lib::commands::list_cli_models("claude_code".into()).unwrap();
-    println!("claude models: {claude:?}");
+    use klepai_lib::commands::cli_models_in_home;
+    // A seeded fake home: the scan must recognize the CLIs' real config and
+    // history shapes (settings.json env keys, config.toml model lines,
+    // history/rollout "model":"slug" JSON). The developer's real home is not
+    // a fixture, and a clean CI runner has no ~/.codex state at all.
+    let dir = std::env::temp_dir().join(format!(
+        "klepai-cli-models-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".claude")).expect("claude dir should create");
+    std::fs::create_dir_all(dir.join(".codex/sessions/2026/10")).expect("codex dirs should create");
+    std::fs::write(
+        dir.join(".claude/settings.json"),
+        r#"{"env":{"ANTHROPIC_MODEL":"m-opus","ANTHROPIC_DEFAULT_SONNET_MODEL":"m-sonnet","OTHER_KEY":"not-a-model"}}"#,
+    )
+    .expect("settings fixture should write");
+    std::fs::write(
+        dir.join(".codex/config.toml"),
+        "model = \"gpt-5.6-terra\"\n\n[profiles.fast]\nmodel = \"gpt-5.6-luna\"\n",
+    )
+    .expect("config fixture should write");
+    std::fs::write(
+        dir.join(".codex/history.jsonl"),
+        "{\"model\":\"gpt-5.6-mars\"}\n{\"model_key\":\"gpt-not\"}\n",
+    )
+    .expect("history fixture should write");
+    std::fs::write(
+        dir.join(".codex/sessions/2026/10/rollout.jsonl"),
+        "{\"payload\":{\"model\":\"gpt-5.6-venus\"}}\n",
+    )
+    .expect("rollout fixture should write");
+
+    let claude = cli_models_in_home(AgentKind::ClaudeCode, &dir);
     assert!(claude.contains(&"default".to_string()));
+    assert!(
+        claude.contains(&"m-opus".to_string()) && claude.contains(&"m-sonnet".to_string()),
+        "settings env models must be detected: {claude:?}"
+    );
+    assert!(
+        !claude.contains(&"not-a-model".to_string()),
+        "non-model env keys must be ignored: {claude:?}"
+    );
+
+    let codex = cli_models_in_home(AgentKind::Codex, &dir);
+    for expected in ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-mars", "gpt-5.6-venus"] {
+        assert!(
+            codex.contains(&expected.to_string()),
+            "{expected} must be detected: {codex:?}"
+        );
+    }
+    assert!(
+        !codex.contains(&"gpt-not".to_string()),
+        "near-miss keys must not leak values: {codex:?}"
+    );
 }
 
 #[test]

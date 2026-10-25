@@ -570,6 +570,13 @@ pub fn list_cli_models(agent_kind: String) -> CmdResult<Vec<String>> {
     let Some(home) = home_dir() else {
         return Ok(vec!["default".to_string()]);
     };
+    Ok(cli_models_in_home(kind, &home))
+}
+
+/// The model scan itself, parameterized by the home directory: the command
+/// runs it against the real home; tests seed a fake one, because a clean CI
+/// runner has no ~/.codex history and the developer's home is not a fixture.
+pub fn cli_models_in_home(kind: AgentKind, home: &Path) -> Vec<String> {
     let mut models = vec!["default".to_string()];
     let push = |models: &mut Vec<String>, model: &str| {
         if !model.is_empty() && !models.iter().any(|known| known == model) {
@@ -628,7 +635,7 @@ pub fn list_cli_models(agent_kind: String) -> CmdResult<Vec<String>> {
             }
         }
     }
-    Ok(models)
+    models
 }
 
 /// Pulls every `"key":"value"` string out of JSON text (sessions are JSONL;
