@@ -149,11 +149,13 @@ test('Klepai header sign and hero logo are visible and actually served', async (
 
 // --- Cycle 5: self-contained static file ----------------------------------
 
-test('page is self-contained: inline CSS, no external scripts or stylesheets', async () => {
+test('page is self-contained: inline CSS, one inline script, nothing external', async () => {
   const { html } = await fetchPage();
   assert.match(html, /<style[\s>]/i, 'CSS lives inline in a <style> block');
   assert.doesNotMatch(html, /<link[^>]+rel=["']?stylesheet/i, 'no external stylesheets');
-  assert.doesNotMatch(html, /<script[\s>]/i, 'no scripts at all (pure static page)');
+  assert.doesNotMatch(html, /<script[^>]+src=/i, 'no external scripts');
+  const scripts = [...html.matchAll(/<script\b/gi)].length;
+  assert.equal(scripts, 1, 'exactly one inline script (download loading state)');
 });
 
 // --- Cycle 4: footer ------------------------------------------------------
@@ -189,4 +191,85 @@ test('feature list describes the three Alpha capabilities in PRD order', async (
   assert.match(items[0], /connect.*Ollama.*OpenAI-compatible/i, 'feature 1: model servers');
   assert.match(items[1], /rich chat.*code blocks.*thinking/i, 'feature 2: rich chat');
   assert.match(items[2], /agents in chat.*Alpha/i, 'feature 3: agents (Alpha)');
+});
+
+// --- Cycle 8: per-OS download buttons + full roadmap -----------------------
+//
+// - Hero and CTA each offer macOS / Windows / Linux download buttons.
+// - All three point at stable asset names under releases/latest/download
+//   (klepai-macos.dmg, klepai-windows.zip, klepai-linux.zip). The stable
+//   names are what keeps the links working across releases — every release
+//   must attach its macOS DMG as klepai-macos.dmg (the Tauri-built name
+//   carries the version, e.g. Klepai_0.0.1_aarch64.dmg).
+// - The roadmap lists every planned release from the master PRD
+//   (plans/prd-post-alpha.md) through 1.0.0.
+
+test('hero offers a download button for each of the three platforms', async () => {
+  const { html } = await fetchPage();
+  const downloads = html.match(/<div class="downloads">([\s\S]*?)<\/div>/);
+  assert.ok(downloads, 'hero has a .downloads block');
+  const hrefs = [...downloads[1].matchAll(/href=["']([^"']+)["']/g)].map((m) => m[1]);
+  for (const os of ['macos', 'windows', 'linux']) {
+    assert.ok(
+      hrefs.some((h) => new RegExp(`releases/latest/download/klepai-${os}\\.(dmg|zip)$`).test(h)),
+      `${os} button downloads klepai-${os} from the latest release`
+    );
+  }
+});
+
+test('cta offers the same three platform downloads plus all releases', async () => {
+  const { html } = await fetchPage();
+  const cta = html.match(/<div class="cta-actions">([\s\S]*?)<\/div>/);
+  assert.ok(cta, 'the CTA band has a .cta-actions block');
+  const hrefs = [...cta[1].matchAll(/href=["']([^"']+)["']/g)].map((m) => m[1]);
+  for (const os of ['macos', 'windows', 'linux']) {
+    assert.ok(
+      hrefs.some((h) => new RegExp(`releases/latest/download/klepai-${os}\\.(dmg|zip)$`).test(h)),
+      `CTA has a ${os} download`
+    );
+  }
+  assert.ok(
+    hrefs.some((h) => /^https:\/\/github\.com\/CrystalPlatforms\/klepai\/releases\/?$/.test(h)),
+    'CTA links to the full releases list'
+  );
+});
+
+test('roadmap lists every planned release through 1.0.0', async () => {
+  const { html } = await fetchPage();
+  const section = html.match(/<section class="roadmap"[^>]*>([\s\S]*?)<\/section>/);
+  assert.ok(section, 'page has a roadmap section');
+  const versions = [...section[1].matchAll(/<span class="version">([^<]+)<\/span>/g)].map((m) => m[1]);
+  const expected = [
+    'v0.0.1', 'v0.0.2', 'v0.1.0', 'v0.1.1', 'v0.1.2',
+    'v0.1.3', 'v0.1.4', 'v0.1.5', 'v0.1.6', 'v0.1.7–9', '1.0.0',
+  ];
+  for (const v of expected) {
+    assert.ok(versions.includes(v), `roadmap mentions ${v}`);
+  }
+  assert.ok(section[1].includes('Cloudflare Tunnel'), 'post-1.0 candidates are named');
+});
+
+// --- Cycle 9: download buttons lock with a Loading... label -----------------
+//
+// Clicking any OS download button locks it ("Loading...", no re-clicks)
+// while the browser takes the file. GitHub release assets carry no CORS
+// header, so the page cannot know the exact moment the download finishes —
+// the button comes back after a grace window while the browser's own
+// download UI shows the real progress.
+
+test('every OS download button locks and shows Loading... while busy', async () => {
+  const { html } = await fetchPage();
+  const buttons = [...html.matchAll(/<a\b[^>]*data-dl[^>]*>[\s\S]*?<\/a>/g)].map((m) => m[0]);
+  assert.equal(buttons.length, 6, 'hero + CTA together carry six download buttons');
+  for (const tag of buttons) {
+    assert.match(tag, /klepai-(macos|windows|linux)\.(dmg|zip)/, 'points at a stable release asset');
+    assert.match(tag, /class="btn-label"/, 'carries a swappable label span');
+  }
+  assert.match(html, /Loading\.\.\./, 'the busy state reads Loading...');
+  assert.match(html, /data-loading/, 'a busy flag guards against repeat clicks');
+  assert.match(html, /preventDefault\(\)/, 'repeat clicks are cancelled');
+  const ghosts = [...html.matchAll(/<a\b[^>]*btn-ghost[^>]*>/g)].map((m) => m[0]);
+  for (const g of ghosts) {
+    assert.doesNotMatch(g, /data-dl/, 'ghost links (Star, All releases) stay plain links');
+  }
 });

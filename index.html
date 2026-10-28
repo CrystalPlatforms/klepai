@@ -230,6 +230,21 @@
         font-weight: 400;
         color: var(--muted-foreground);
       }
+      .btn svg {
+        width: 18px;
+        height: 18px;
+        margin-right: 8px;
+        flex: none;
+      }
+      /* Equal width for the three OS buttons, so swapping the label for
+         "Loading..." never reflows the row. */
+      .btn[data-dl] {
+        min-width: 140px;
+      }
+      .btn[data-dl][data-loading] {
+        pointer-events: none;
+        opacity: 0.7;
+      }
       .demo-frame {
         margin: 36px auto 0;
         max-width: 720px;
@@ -516,7 +531,18 @@
           <span class="badge">macOS · Windows · Linux</span>
         </div>
         <div class="downloads">
-          <a class="btn btn-primary" href="https://github.com/CrystalPlatforms/klepai/releases/latest">Download Klepai (Alpha)</a>
+          <a class="btn btn-primary" data-dl href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-macos.dmg" aria-label="Download Klepai for macOS">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">macOS</span>
+          </a>
+          <a class="btn" data-dl href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-windows.zip" aria-label="Download Klepai for Windows">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">Windows</span>
+          </a>
+          <a class="btn" data-dl href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-linux.zip" aria-label="Download Klepai for Linux">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">Linux</span>
+          </a>
           <a class="btn btn-ghost" href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">Star on GitHub</a>
         </div>
 
@@ -620,15 +646,55 @@
 
       <section class="roadmap" id="roadmap">
         <h2>Roadmap</h2>
-        <p class="section-lead">What shipped, and what comes next. Everything released lives in the <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">repository</a>.</p>
+        <p class="section-lead">What shipped, and what comes next — no deadlines, a version ships when it is done. Everything released lives in the <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">repository</a>.</p>
         <div class="timeline">
           <div class="timeline-item now">
             <span class="version">v0.0.1</span>
             <span class="what"><strong>Klepai Alpha</strong>: servers and models with live status, streamed rich chat, Agent mode (server-model brains with built-in tools, Claude Code and Codex as add-ons), the skill library and its <strong>/</strong> palette, permission gates, chat export, images and attachments, in-app updates.</span>
           </div>
           <div class="timeline-item">
-            <span class="version">next</span>
-            <span class="what">First public release: signed update bundles live on GitHub Releases, per-platform installers for macOS, Windows and Linux.</span>
+            <span class="version">v0.0.2</span>
+            <span class="what">Agent collision guard: a warning when two agents work in one project folder, with optional <strong>git-worktree</strong> isolation and click-to-merge.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.0</span>
+            <span class="what">Variant navigation on the last answer — <strong>&lt;</strong>/<strong>&gt;</strong> to compare retries — plus an update-available banner in the app window.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.1</span>
+            <span class="what">Agent status notifications: <strong>idle</strong> and <strong>needs input</strong> only, nothing while running — with an orange needs-input loader.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.2</span>
+            <span class="what"><strong>Unrestricted</strong> mode: every agent action auto-accepted — edits, commands — for trusted hands-free runs.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.3</span>
+            <span class="what"><strong>Brainstorm</strong> mode: the model first proposes several directions; you pick one to develop.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.4</span>
+            <span class="what">Custom <strong>MCP servers</strong>: connect your own tools in Settings, and their tools become callable in every mode.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.5</span>
+            <span class="what">Any theme from a <strong>tweakcn link</strong>, applied live, with a one-click reset to CRS-Theme.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.6</span>
+            <span class="what">Landing round two: a per-version <strong>changelog</strong> on this page, umux-style.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">v0.1.7–9</span>
+            <span class="what">Stabilization: hand-validated Windows and Linux installs, polish — the road to 1.0.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">1.0.0</span>
+            <span class="what"><strong>Stability</strong>: Klepai as the daily driver — full regression pass, validated installs on macOS, Windows and Linux.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">after</span>
+            <span class="what">Post-1.0 candidates: a docs site, remote access to home models via Cloudflare Tunnel, a public marketplace for skills and presets.</span>
           </div>
         </div>
       </section>
@@ -637,8 +703,19 @@
         <h2>Ready to run your models in Klepai?</h2>
         <p>Free and open source. No accounts, no cookies, no nonsense.</p>
         <div class="cta-actions">
-          <a class="btn btn-primary" href="https://github.com/CrystalPlatforms/klepai/releases/latest">Download Klepai</a>
-          <a class="btn btn-ghost" href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">Star on GitHub</a>
+          <a class="btn btn-primary" data-dl href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-macos.dmg" aria-label="Download Klepai for macOS">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">macOS</span>
+          </a>
+          <a class="btn" data-dl href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-windows.zip" aria-label="Download Klepai for Windows">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">Windows</span>
+          </a>
+          <a class="btn" data-dl href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-linux.zip" aria-label="Download Klepai for Linux">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">Linux</span>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/CrystalPlatforms/klepai/releases" target="_blank" rel="noopener">All releases</a>
         </div>
       </section>
     </main>
@@ -649,5 +726,35 @@
         · Klepai by CrystalPlatforms · Alpha v.0.0.1 · built with Tauri &amp; React
       </p>
     </footer>
+
+    <script>
+      // Download buttons lock with a "Loading..." label while the browser
+      // takes the file, so nobody double-clicks or wonders whether the
+      // click registered. The first click stays fully native (the browser's
+      // own download starts immediately and its UI shows real progress).
+      // Cross-origin release assets give the page no "finished" signal, so
+      // the button comes back after a grace window instead.
+      (function () {
+        var GRACE_MS = 7000;
+        document.querySelectorAll("a[data-dl]").forEach(function (a) {
+          var label = a.querySelector(".btn-label");
+          var original = label.textContent;
+          a.addEventListener("click", function (e) {
+            if (a.dataset.loading) {
+              e.preventDefault();
+              return;
+            }
+            a.dataset.loading = "1";
+            a.setAttribute("aria-busy", "true");
+            label.textContent = "Loading...";
+            setTimeout(function () {
+              delete a.dataset.loading;
+              a.removeAttribute("aria-busy");
+              label.textContent = original;
+            }, GRACE_MS);
+          });
+        });
+      })();
+    </script>
   </body>
 </html>
