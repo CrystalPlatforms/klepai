@@ -1,6 +1,8 @@
 # Plan: Klepai Skills (Post-Alpha)
 
 > Source PRD: issue #16 (annex to `PRD.md` / issue #1). Post-Alpha — every slice lands after the Alpha release (#15). Alpha scope is untouched.
+>
+> **Status: IMPLEMENTED — all four phases (S1–S4) shipped post-Alpha; Rust tests in `app/src-tauri/tests/skills_injection.rs`.** This file is a historical plan, not a backlog. The shipped design drifted from the plan in one point: instead of injecting full skill content into the system prompt with a 32 KiB cap, the model receives a light index of enabled skills and pulls a skill's full text on demand through the `read_skill` tool (no size budget). Everything else — import, library management, toggle, slash palette, one-shot invocation, Agent-session handoff — landed as planned.
 
 ## Architectural decisions
 

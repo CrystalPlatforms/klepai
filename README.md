@@ -7,7 +7,7 @@ Klepai is a private, self-hosted LLM manager: a desktop chat app for macOS, Wind
 - **Agent mode**: your server models code in a project folder through built-in tools, with Claude Code and Codex CLI as ready-made extra brains
 - Everything local: SQLite, no accounts, no telemetry
 
-**Status:** Klepai Alpha v.0.0.1 (in development) · see [PRD.md](PRD.md)
+**Status:** Klepai Alpha v.0.0.1 (released) · see [PRD.md](PRD.md)
 
 ## Updates
 

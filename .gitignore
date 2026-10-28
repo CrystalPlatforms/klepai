@@ -16,3 +16,6 @@ deploy/
 
 # Tauri generated capability schemas
 app/src-tauri/gen/schemas/
+
+# Brag video output (local only)
+brag-output/
