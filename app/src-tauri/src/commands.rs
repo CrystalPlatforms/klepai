@@ -5,6 +5,7 @@
 //! persistence, auto-titling and streaming, which is why it lives here rather
 //! than in either module.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -18,6 +19,9 @@ use tokio::sync::oneshot;
 use crate::agent::{
     adapter_for, control_response_line, home_dir, permission_target, AgentEvent, AgentRunner,
     Segment, StdinHandle,
+};
+use crate::collision::{
+    self, CollisionBlocker, CollisionCheck, RunRegistry, WorktreeOverrides,
 };
 use crate::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, ModelInfo};
 use crate::skills::{self, SkillStore};
@@ -354,20 +358,26 @@ pub fn set_conversation_mode(state: State<'_, AppState>, id: i64, mode: String) 
     with_store(&state, |store| store.set_conversation_mode(id, &mode))
 }
 
-/// Expands a leading `~` to the user's home directory.
-fn expand_home(path: &str) -> PathBuf {
-    if path == "~" {
-        if let Some(home) = home_dir() {
-            return PathBuf::from(home);
+/// Expands a leading `~` against the given home directory (`None` keeps
+/// the path untouched). Injectable so tests seed a fake home (precedent:
+/// `cli_models_in_home`).
+pub fn expand_home_in(path: &str, home: Option<&Path>) -> PathBuf {
+    if let Some(home) = home {
+        if path == "~" {
+            return home.to_path_buf();
         }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            let mut expanded = PathBuf::from(home);
+        if let Some(rest) = path.strip_prefix("~/") {
+            let mut expanded = home.to_path_buf();
             expanded.push(rest);
             return expanded;
         }
     }
     PathBuf::from(path)
+}
+
+/// Expands a leading `~` to the user's home directory.
+fn expand_home(path: &str) -> PathBuf {
+    expand_home_in(path, home_dir().as_deref())
 }
 
 /// Writes data-URL attachments to temp files so CLIs can consume them as
@@ -963,6 +973,16 @@ pub enum ChatStreamEvent {
     /// The agent's CLI went silent mid-run (see `agent::AgentEvent::Stalled`)
     /// — the UI nudges the user toward Stop instead of an endless spinner.
     Stalled { seconds: u64 },
+    /// A worktree run ended (issues #40/#41): `changes` — the branch holds
+    /// an auto-commit and the UI must ask merge-back ([Merge into project] /
+    /// [Keep branch]); `clean` — nothing to merge, informational only (the
+    /// copy and its branch are already gone).
+    WorktreeFinished {
+        status: String,
+        branch: String,
+        path: String,
+        summary: String,
+    },
     Error { message: String },
 }
 
@@ -1253,12 +1273,19 @@ pub async fn send_agent_message(
     content: String,
     images: Vec<String>,
     skill_id: Option<i64>,
+    collision_choice: Option<String>,
     channel: Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
-    // 1. Resolve the brain and persist the prompt (store lock held only
-    //    here — never across the await). The skills block (enabled set +
-    //    one-shot) is assembled here too, before the lock is dropped.
-    let (kind, model, cwd, access, user_message, title_changed, history, skills_block) = {
+    // 1. Read-only phase: which brain, which access, which folder — plus the
+    //    titles of every conversation currently running, so a collision
+    //    refusal can name the blocker. Nothing persists yet: a refused send
+    //    must not leave a message behind.
+    let runs_snapshot = state
+        .runs
+        .lock()
+        .map_err(|_| "runs lock poisoned")?
+        .clone();
+    let (kind, model, access, project_path, blocker_titles) = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         let conversation = guard
             .get_conversation(conversation_id)
@@ -1272,21 +1299,47 @@ pub async fn send_agent_message(
         } else {
             crate::agent::AgentAccess::ReadOnly
         };
-        // Agent mode works inside the project folder; Natural mode's
-        // read-only runs need no folder and start in the home directory.
-        let cwd = if access == crate::agent::AgentAccess::Full {
-            let raw_path = conversation
-                .project_path
-                .clone()
-                .ok_or("no project folder selected — pick one in the mode selector")?;
-            let cwd = expand_home(&raw_path);
-            if !cwd.is_dir() {
-                return Err(format!("Project folder does not exist: {raw_path}"));
-            }
-            cwd
-        } else {
-            home_dir().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
-        };
+        let blocker_titles: HashMap<i64, String> = runs_snapshot
+            .keys()
+            .filter_map(|id| {
+                guard
+                    .get_conversation(*id)
+                    .ok()
+                    .map(|conversation| (*id, conversation.title.clone()))
+            })
+            .collect();
+        (
+            kind,
+            conversation.model_id.clone(),
+            access,
+            conversation.project_path.clone(),
+            blocker_titles,
+        )
+    };
+
+    // 2. The working folder — the collision chokepoint (issues #38–#41).
+    //    Agent mode resolves the worktree override, asks the registry and
+    //    applies the dialog's decision; a send under collision without a
+    //    choice is refused before anything persists. Natural mode (read
+    //    -only) runs in the home directory and never participates.
+    let blocker_title = |id: i64| blocker_titles.get(&id).cloned();
+    let (cwd, in_worktree) = resolve_send_cwd(
+        home_dir(),
+        access,
+        project_path.as_deref(),
+        conversation_id,
+        &runs_snapshot,
+        &state.worktrees,
+        &blocker_title,
+        collision_choice.as_deref(),
+    )
+    .await?;
+
+    // 3. Persist the prompt (store lock held only here — never across an
+    //    await). The skills block (enabled set + one-shot) is assembled in
+    //    the same lock.
+    let (user_message, title_changed, history, skills_block) = {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         let skill_name = match skill_id {
             Some(id) => {
                 let skill = guard.get_skill(id).map_err(|e| e.to_string())?;
@@ -1319,7 +1372,6 @@ pub async fn send_agent_message(
         let history = guard
             .list_messages(conversation_id)
             .map_err(|e| e.to_string())?;
-        let model = conversation.model_id.clone();
         // Enabled skills ride on every agent send as index cards only — the
         // CLI reads a skill's full text on demand by opening the listed
         // library file; the one-shot joins as direct content (issue #34).
@@ -1343,10 +1395,6 @@ pub async fn send_agent_message(
             block
         };
         (
-            kind,
-            model,
-            cwd,
-            access,
             user_message,
             title_changed,
             history,
@@ -1379,6 +1427,22 @@ pub async fn send_agent_message(
         .lock()
         .map_err(|_| "generation lock poisoned")?
         .insert(generation_id, abort.clone());
+    // Collision registry (issues #38–#41): agent-mode runs are visible
+    // while they work; natural-mode (read-only) runs never participate.
+    if access == crate::agent::AgentAccess::Full {
+        state
+            .runs
+            .lock()
+            .map_err(|_| "runs lock poisoned")?
+            .insert(
+                conversation_id,
+                collision::ActiveRun {
+                    cwd: cwd.clone(),
+                    agent_kind: kind,
+                    generation_id,
+                },
+            );
+    }
     let _ = channel.send(ChatStreamEvent::Started { generation_id });
 
     let run = async {
@@ -1539,6 +1603,15 @@ pub async fn send_agent_message(
         .lock()
         .map_err(|_| "generation lock poisoned")?
         .remove(&generation_id);
+    // The run ended — finish, abort or error alike — the conversation is no
+    // longer "working somewhere" (issue #38 registry lifecycle).
+    if access == crate::agent::AgentAccess::Full {
+        state
+            .runs
+            .lock()
+            .map_err(|_| "runs lock poisoned")?
+            .remove(&conversation_id);
+    }
 
     let (segments, error, aborted) = match run {
         Ok(result) => result,
@@ -1578,9 +1651,24 @@ pub async fn send_agent_message(
         let _ = channel.send(ChatStreamEvent::History { messages });
     }
 
+    // A worktree run closes the loop (issues #40/#41): auto-commit the
+    // branch, then tell the UI whether anything landed. A git failure here
+    // surfaces through AgentDone's error — the run's own work is already
+    // persisted, so the command itself does not fail.
+    let mut worktree_error: Option<String> = None;
+    if in_worktree {
+        let main_dir = expand_home(project_path.as_deref().unwrap_or_default());
+        if let Err(message) =
+            finish_worktree_run(&state, conversation_id, &main_dir, &cwd, &channel).await
+        {
+            crate::agent::agent_log(&format!("worktree merge-back failed: {message}"));
+            worktree_error = Some(message);
+        }
+    }
+
     let _ = channel.send(ChatStreamEvent::AgentDone {
         aborted,
-        error: error.clone(),
+        error: error.clone().or(worktree_error),
     });
     if let Some(error) = error {
         return Err(error);
@@ -2153,6 +2241,313 @@ fn collect_project_files(
             out.push(relative);
         }
     }
+}
+
+// ---- Agent collisions & worktrees (issues #38–#41) --------------------------
+
+/// The agent send's working folder — the collision chokepoint. Natural mode
+/// (read-only) never touches the registry: it runs in the home directory and
+/// cannot collide with anyone. Agent mode resolves the conversation's
+/// worktree override first (a worktree run is isolated by construction and
+/// never collides with a raw run on the project), then asks the registry,
+/// then applies the dialog's decision; no decision under collision is a
+/// refusal naming the blocker.
+///
+/// `home` is injectable so tests seed a fake home (precedent:
+/// `cli_models_in_home`); `blocker_title` names the blocking conversation.
+pub async fn resolve_send_cwd(
+    home: Option<PathBuf>,
+    access: crate::agent::AgentAccess,
+    project_path: Option<&str>,
+    conversation_id: i64,
+    runs: &RunRegistry,
+    worktrees: &tokio::sync::Mutex<WorktreeOverrides>,
+    blocker_title: &(dyn Fn(i64) -> Option<String> + Send + Sync),
+    collision_choice: Option<&str>,
+) -> Result<(PathBuf, bool), String> {
+    if access != crate::agent::AgentAccess::Full {
+        return Ok((home.unwrap_or_else(|| PathBuf::from(".")), false));
+    }
+    // 1. A live worktree override wins — the run is isolated by
+    //    construction and never collides with a raw run on the project.
+    let override_path = worktrees.lock().await.get(&conversation_id).cloned();
+    if let Some(worktree) = override_path {
+        if worktree.is_dir() {
+            return Ok((worktree, true));
+        }
+        // The copy vanished (manual cleanup) — drop the stale override.
+        worktrees.lock().await.remove(&conversation_id);
+    }
+    let raw_path = project_path
+        .ok_or("no project folder selected — pick one in the mode selector")?;
+    let expanded = expand_home_in(raw_path, home.as_deref());
+    if !expanded.is_dir() {
+        return Err(format!("Project folder does not exist: {raw_path}"));
+    }
+    let cwd = expanded
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve project folder: {error}"))?;
+    // 2. Registry check — the dialog asked ahead of this send and the
+    //    decision rides along. A collision without a decision refuses.
+    if let Some((blocker_id, blocker_path)) =
+        collision::find_collision(runs, conversation_id, &cwd)
+    {
+        let named = blocker_title(blocker_id)
+            .map(|title| format!("“{title}” (conversation #{blocker_id})"))
+            .unwrap_or_else(|| format!("conversation #{blocker_id}"));
+        return match collision_choice {
+            Some("proceed") => Ok((cwd, false)),
+            Some("worktree") => {
+                let worktree = collision::worktree_dir_for(&cwd, conversation_id)?;
+                let branch = collision::branch_for(conversation_id);
+                collision::create_worktree(&cwd, &worktree, &branch).await?;
+                let resolved = worktree
+                    .canonicalize()
+                    .map_err(|error| format!("cannot resolve worktree folder: {error}"))?;
+                worktrees
+                    .lock()
+                    .await
+                    .insert(conversation_id, resolved.clone());
+                Ok((resolved, true))
+            }
+            _ => Err(format!(
+                "collision: {named} is already working in {} — choose “Run anyway” or “Run in worktree” for this folder",
+                blocker_path.display()
+            )),
+        };
+    }
+    Ok((cwd, false))
+}
+
+/// Closes a worktree run (issues #40/#41): auto-commits the branch (owner
+/// requirement — commits happen in the copy, the main history is never
+/// touched) and tells the UI whether anything landed. Zero changes → no
+/// commit, informational event only, and the worktree + branch are removed
+/// (nothing of value stays behind).
+async fn finish_worktree_run(
+    state: &State<'_, AppState>,
+    conversation_id: i64,
+    main: &Path,
+    worktree: &Path,
+    channel: &Channel<ChatStreamEvent>,
+) -> Result<(), String> {
+    let branch = collision::branch_for(conversation_id);
+    let title = {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        guard
+            .get_conversation(conversation_id)
+            .map(|conversation| conversation.title.clone())
+            .unwrap_or_else(|_| format!("conversation #{conversation_id}"))
+    };
+    let message =
+        format!("Klepai agent — conversation “{title}” (#{conversation_id})");
+    let summary = match collision::commit_worktree(worktree, &message).await? {
+        Some(summary) => summary,
+        None => {
+            // Zero changes: nothing to merge — close the loop.
+            collision::remove_worktree(main, worktree).await?;
+            collision::delete_branch(main, &branch).await?;
+            state.worktrees.lock().await.remove(&conversation_id);
+            let _ = channel.send(ChatStreamEvent::WorktreeFinished {
+                status: "clean".into(),
+                branch: branch.clone(),
+                path: worktree.display().to_string(),
+                summary: "The agent made no changes in the worktree — nothing to merge."
+                    .into(),
+            });
+            return Ok(());
+        }
+    };
+    let _ = channel.send(ChatStreamEvent::WorktreeFinished {
+        status: "changes".into(),
+        branch: branch.clone(),
+        path: worktree.display().to_string(),
+        summary,
+    });
+    Ok(())
+}
+
+/// The frontend's pre-send ask: is another agent working in this
+/// conversation's folder? Natural-mode conversations never participate, so
+/// they always answer "nobody". `has_git` decides whether the worktree
+/// choice is offered.
+#[derive(Debug, Serialize)]
+pub struct WorktreeResolution {
+    pub status: String, // "merged" | "kept" | "conflict"
+    pub branch: String,
+    pub summary: String,
+    /// Manual commands when the merge is left to the user (conflict, keep).
+    pub commands: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn check_agent_collision(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+) -> CmdResult<CollisionCheck> {
+    let runs_snapshot = state
+        .runs
+        .lock()
+        .map_err(|_| "runs lock poisoned")?
+        .clone();
+    let (mode, project_path) = {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let conversation = guard
+            .get_conversation(conversation_id)
+            .map_err(|e| e.to_string())?;
+        (conversation.mode.clone(), conversation.project_path.clone())
+    };
+    if mode != "agent" {
+        return Ok(CollisionCheck {
+            blocker: None,
+            has_git: false,
+        });
+    }
+    let Some(raw_path) = project_path else {
+        return Ok(CollisionCheck {
+            blocker: None,
+            has_git: false,
+        });
+    };
+    let expanded = expand_home(&raw_path);
+    if !expanded.is_dir() {
+        return Ok(CollisionCheck {
+            blocker: None,
+            has_git: false,
+        });
+    }
+    let cwd = expanded
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve project folder: {e}"))?;
+    let blocker = collision::find_collision(&runs_snapshot, conversation_id, &cwd)
+        .map(|(blocker_id, blocker_path)| {
+            let title = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|guard| guard.get_conversation(blocker_id).ok())
+                .map(|conversation| conversation.title)
+                .unwrap_or_else(|| format!("conversation #{blocker_id}"));
+            CollisionBlocker {
+                conversation_id: blocker_id,
+                title,
+                path: blocker_path.display().to_string(),
+            }
+        });
+    let has_git = collision::is_git_work_tree(&cwd).await;
+    Ok(CollisionCheck { blocker, has_git })
+}
+
+/// The user's merge-back decision (issues #40/#41) after a worktree run
+/// ended with changes on its branch. `merge = true` merges into the main
+/// checkout — on conflict the merge aborts (main untouched, branch and
+/// worktree kept) and the answer carries the exact manual commands. The
+/// outcome is also recorded in the thread as an activity block.
+#[tauri::command]
+pub async fn resolve_worktree(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    merge: bool,
+) -> CmdResult<WorktreeResolution> {
+    let main = {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let conversation = guard
+            .get_conversation(conversation_id)
+            .map_err(|e| e.to_string())?;
+        let raw_path = conversation
+            .project_path
+            .as_deref()
+            .ok_or("this conversation has no project folder")?;
+        expand_home(raw_path)
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve project folder: {e}"))?
+    };
+    let branch = collision::branch_for(conversation_id);
+    let worktree = {
+        let overridden = state.worktrees.lock().await.get(&conversation_id).cloned();
+        match overridden {
+            Some(path) if path.is_dir() => path,
+            _ => collision::worktree_dir_for(&main, conversation_id)?,
+        }
+    };
+    if !worktree.is_dir() {
+        return Err(format!("worktree folder is gone: {}", worktree.display()));
+    }
+    let resolution = if merge {
+        match collision::merge_branch(&main, &branch).await? {
+            collision::MergeOutcome::Merged { summary } => {
+                // Worktree first: git refuses to delete a branch still
+                // checked out in a worktree.
+                collision::remove_worktree(&main, &worktree).await?;
+                collision::delete_branch(&main, &branch).await?;
+                state.worktrees.lock().await.remove(&conversation_id);
+                WorktreeResolution {
+                    status: "merged".into(),
+                    branch: branch.clone(),
+                    summary,
+                    commands: Vec::new(),
+                }
+            }
+            collision::MergeOutcome::Conflicted { output } => {
+                // The main checkout is already restored (merge aborted) —
+                // both the branch and the worktree stay for a manual merge.
+                WorktreeResolution {
+                    status: "conflict".into(),
+                    branch: branch.clone(),
+                    summary: output,
+                    commands: vec![
+                        format!("git -C \"{}\" merge {branch}", main.display()),
+                        format!(
+                            "git -C \"{}\" worktree remove \"{}\"",
+                            main.display(),
+                            worktree.display()
+                        ),
+                        format!("git -C \"{}\" branch -D {branch}", main.display()),
+                    ],
+                }
+            }
+        }
+    } else {
+        collision::remove_worktree(&main, &worktree).await?;
+        state.worktrees.lock().await.remove(&conversation_id);
+        WorktreeResolution {
+            status: "kept".into(),
+            branch: branch.clone(),
+            summary: format!(
+                "branch {branch} kept for a manual merge — the worktree folder was removed"
+            ),
+            commands: vec![format!("git -C \"{}\" merge {branch}", main.display())],
+        }
+    };
+    // Record the outcome in the thread so it survives — a tool-role payload
+    // renders as an activity block, the same as agent activity.
+    {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let (head, detail) = match resolution.status.as_str() {
+            "merged" => (format!("Merged {branch}"), resolution.summary.clone()),
+            "kept" => (
+                format!("Kept {branch}"),
+                format!(
+                    "{}\n\n{}",
+                    resolution.summary,
+                    resolution.commands.join("\n")
+                ),
+            ),
+            _ => (
+                format!("Merge conflict — {branch} kept"),
+                format!(
+                    "The merge hit conflicts and was aborted — the main folder is untouched. Merge by hand:\n\n{}\n\n{}",
+                    resolution.commands.first().map(String::as_str).unwrap_or_default(),
+                    resolution.summary
+                ),
+            ),
+        };
+        let payload = serde_json::json!({ "title": head, "detail": detail }).to_string();
+        guard
+            .insert_message_full(conversation_id, "tool", &payload, None, &[], None)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(resolution)
 }
 
 #[cfg(test)]

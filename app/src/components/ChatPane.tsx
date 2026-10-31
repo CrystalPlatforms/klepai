@@ -19,6 +19,7 @@ import {
 import type {
   AgentKind,
   ChatStreamEvent,
+  CollisionCheck,
   Conversation,
   Message,
   ModelInfo,
@@ -28,6 +29,9 @@ import type {
   StreamSegment,
 } from "@/types";
 import { AGENT_COMMANDS, isReasoningTitle } from "@/types";
+import { CollisionPanel, type CollisionChoice } from "@/components/CollisionPanel";
+import type { CollisionBlocker } from "@/types";
+import { WorktreePanel, type WorktreeInfo } from "@/components/WorktreePanel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -131,8 +135,11 @@ interface ConversationStream {
   generationId: number | null;
   /** The last failure — resurfaced when the conversation is reopened. */
   error: string | null;
-  /** The open permission ask (issue #28) — resurfaced on reopen too. */
+  /** The open permission ask (issue #28) — resurfaced when reopened. */
   permission: PermissionAsk | null;
+  /** The end-of-worktree-run decision (issues #40/#41) — resurfaced when
+   * the conversation is reopened, like a permission ask. */
+  pendingWorktree: WorktreeInfo | null;
   /** Assistant-enqueued follow-ups (klepai-queue, issue #22) waiting to be
    * sent. Mid-run they ride the brain's live session; after it, the next
    * generation. */
@@ -506,6 +513,16 @@ export function ChatPane({
   /** The displayed conversation's open permission ask (issue #28) — while
    * one stands, the composer swaps to the allow buttons. */
   const [permission, setPermission] = useState<PermissionAsk | null>(null);
+  /** A collision awaiting the user's decision (issue #38) — exists only for
+   * the displayed conversation; the held send rides inside until decided. */
+  const [collision, setCollision] = useState<{
+    blocker: CollisionBlocker;
+    hasGit: boolean;
+    pending: { content: string; images: string[]; skillId: number | null };
+  } | null>(null);
+  /** The end-of-worktree-run ask or info (issues #40/#41) for the
+   * displayed chat. */
+  const [worktree, setWorktree] = useState<WorktreeInfo | null>(null);
   /** The displayed conversation's queued follow-ups (issue #22). */
   const [queue, setQueue] = useState<string[]>([]);
   /** The assistant's latest goal-progress state (issue #22) — the pinned
@@ -580,6 +597,7 @@ export function ChatPane({
         generationId: null,
         error: null,
         permission: null,
+        pendingWorktree: null,
         queue: [],
         sendMode: "chat",
         steerStop: false,
@@ -725,6 +743,7 @@ export function ChatPane({
     }
     if (entry?.error) setError(entry.error);
     if (entry?.permission) setPermission(entry.permission);
+    setWorktree(entry?.pendingWorktree ?? null);
     if (entry && entry.queue.length > 0) setQueue([...entry.queue]);
 
     let cancelled = false;
@@ -921,6 +940,19 @@ export function ChatPane({
           case "stalled":
             live.buffer.stalled = event.seconds;
             break;
+          case "worktree_finished":
+            // A worktree run ended (issues #40/#41): the merge-back ask or
+            // the nothing-to-merge info — resurfaced on reopen like an ask.
+            live.pendingWorktree = {
+              status: event.status,
+              branch: event.branch,
+              path: event.path,
+              summary: event.summary,
+            };
+            if (displayedIdRef.current === conversationId) {
+              setWorktree(live.pendingWorktree);
+            }
+            break;
           case "done": {
             live.streaming = false;
             live.generationId = null;
@@ -1092,6 +1124,53 @@ export function ChatPane({
     },
     [],
   );
+
+  /** The user's collision decision (issue #38): the held send goes out with
+   * the choice attached (`collisionChoice`), or nothing is sent at all. */
+  const chooseCollision = useCallback(
+    (choice: CollisionChoice) => {
+      const pending = collision?.pending;
+      setCollision(null);
+      const id = displayedIdRef.current;
+      if (!pending || id === null || choice === null) return;
+      runCommand(id, "send_agent_message", {
+        content: pending.content,
+        images: pending.images,
+        skillId: pending.skillId,
+        collisionChoice: choice,
+      });
+    },
+    [collision, runCommand],
+  );
+
+  /** The user's merge-back decision (issue #40): the backend merges into
+   * the project (or keeps the branch), records the outcome in the thread,
+   * and the view reloads to show it. */
+  const resolveWorktree = useCallback(
+    async (merge: boolean) => {
+      const id = displayedIdRef.current;
+      if (id === null) return;
+      const entry = streamsRef.current.get(id);
+      if (entry) entry.pendingWorktree = null;
+      setWorktree(null);
+      try {
+        await invoke("resolve_worktree", { conversationId: id, merge });
+        await reloadMessages(id);
+      } catch (err) {
+        console.error("Failed to resolve worktree:", err);
+        setError(String(err));
+      }
+    },
+    [reloadMessages],
+  );
+
+  /** The nothing-to-merge info (issue #41) — dismiss only. */
+  const dismissWorktree = useCallback(() => {
+    const id = displayedIdRef.current;
+    const entry = id !== null ? streamsRef.current.get(id) : undefined;
+    if (entry) entry.pendingWorktree = null;
+    setWorktree(null);
+  }, []);
 
   /** Drops every ask chip — DOM first, then the mirrored state. */
   const clearAsks = useCallback(() => {
@@ -1433,11 +1512,33 @@ export function ChatPane({
         : "chat";
     entryFor(conversation.id).sendMode = pipeline;
     if (pipeline === "agent") {
-      runCommand(conversation.id, "send_agent_message", {
-        content: sentText,
-        images: sentImages,
-        skillId: invokedSkillId,
-      });
+      // Collision pre-check (issue #38): ask the backend who is working in
+      // this folder before anything spawns; the dialog's decision travels
+      // with the send as collisionChoice. A failed check never blocks —
+      // the backend re-checks on send and refuses unprotected collisions.
+      void (async () => {
+        let check: CollisionCheck = { blocker: null, has_git: false };
+        try {
+          check = await invoke<CollisionCheck>("check_agent_collision", {
+            conversationId: conversation.id,
+          });
+        } catch (err) {
+          console.error("Collision check failed:", err);
+        }
+        if (check.blocker) {
+          setCollision({
+            blocker: check.blocker,
+            hasGit: check.has_git,
+            pending: { content: sentText, images: sentImages, skillId: invokedSkillId ?? null },
+          });
+          return;
+        }
+        runCommand(conversation.id, "send_agent_message", {
+          content: sentText,
+          images: sentImages,
+          skillId: invokedSkillId,
+        });
+      })();
     } else {
       runCommand(conversation.id, "send_message", {
         content: sentText,
@@ -2045,6 +2146,27 @@ export function ChatPane({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        {/* Collision + worktree notices (issues #38–#41): non-blocking
+            panels ABOVE the composer — typing keeps working while they
+            wait for the user's decision. */}
+        {(collision || worktree) && (
+          <div className="mb-2 space-y-2">
+            {collision && (
+              <CollisionPanel
+                blocker={collision.blocker}
+                hasGit={collision.hasGit}
+                onChoose={chooseCollision}
+              />
+            )}
+            {worktree && (
+              <WorktreePanel
+                info={worktree}
+                onResolve={(merge) => void resolveWorktree(merge)}
+                onDismiss={dismissWorktree}
+              />
+            )}
+          </div>
+        )}
         <div className="flex items-end gap-2">
           {permission ? (
             <PermissionAskPanel

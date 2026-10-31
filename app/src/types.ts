@@ -89,6 +89,16 @@ export type ChatStreamEvent =
   /** The agent's CLI went silent mid-run — a nudge toward Stop instead of
    * an endless spinner. */
   | { type: "stalled"; seconds: number }
+  /** A worktree run ended (issues #40/#41): `changes` — the branch holds
+   * an auto-commit and the UI must ask merge-back; `clean` — nothing to
+   * merge, informational only (the copy and its branch are already gone). */
+  | {
+      type: "worktree_finished";
+      status: "clean" | "changes";
+      branch: string;
+      path: string;
+      summary: string;
+    }
   | { type: "done"; message_id: number; content: string; thinking: string; aborted: boolean }
   /** Agent runs end with a full history push plus this marker. */
   | { type: "agent_done"; aborted: boolean; error: string | null }
@@ -193,4 +203,27 @@ export interface StoredSkill {
   path: string;
   size_bytes: number;
   created_at: number;
+}
+
+/** The conversation blocking an agent send (issue #38): who and where. */
+export interface CollisionBlocker {
+  conversation_id: number;
+  title: string;
+  path: string;
+}
+
+/** The pre-send ask (issue #38): nobody blocking unless a run's folder
+ * equals or contains this one; `has_git` decides whether the worktree
+ * choice is offered (issue #39). */
+export interface CollisionCheck {
+  blocker: CollisionBlocker | null;
+  has_git: boolean;
+}
+
+/** What happened to a worktree after the user's merge-back decision. */
+export interface WorktreeResolution {
+  status: "merged" | "kept" | "conflict";
+  branch: string;
+  summary: string;
+  commands: string[];
 }

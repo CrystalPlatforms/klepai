@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod collision;
 pub mod tools;
 pub mod commands;
 pub mod gateway;
@@ -30,6 +31,15 @@ pub struct AppState {
     /// answer travels to the child's stdin) and the server tool loop (the
     /// answer travels through a oneshot).
     pub permissions: Mutex<HashMap<String, commands::PendingPermission>>,
+    /// Who is working where (issues #38–#41): conversation id → its live
+    /// agent run { effective cwd, brain, generation }. In-memory only —
+    /// runs die with the app.
+    pub runs: Mutex<collision::RunRegistry>,
+    /// Per-conversation worktree overrides (issue #39): the sibling copy
+    /// the conversation's agent runs execute in. A tokio mutex because it
+    /// is held across the worktree's async git setup. In-memory only: a
+    /// restart loses the override, the worktree stays on disk.
+    pub worktrees: tokio::sync::Mutex<collision::WorktreeOverrides>,
 }
 
 /// The pre-flight the frontend runs BEFORE touching the updater plugin
@@ -61,6 +71,8 @@ pub fn run() {
                 next_generation: AtomicU64::new(1),
                 generations: Mutex::new(HashMap::new()),
                 permissions: Mutex::new(HashMap::new()),
+                runs: Mutex::new(HashMap::new()),
+                worktrees: tokio::sync::Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -108,6 +120,8 @@ pub fn run() {
             commands::list_allowed_commands,
             commands::delete_allowed_command,
             commands::respond_permission,
+            commands::check_agent_collision,
+            commands::resolve_worktree,
             updater_status,
         ])
         .run(tauri::generate_context!())
