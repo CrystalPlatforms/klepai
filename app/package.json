@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "tauri": "TAURI_SIGNING_PRIVATE_KEY=\"$HOME/.tauri/klepai.key\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=\"\" tauri"
+    "tauri": "node scripts/tauri.cjs"
   },
   "dependencies": {
     "@radix-ui/react-context-menu": "^2.2.2",
