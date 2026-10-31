@@ -3,18 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  PanelLeftOpen,
-  PanelRightOpen,
-  Paperclip,
-  Pencil,
-  RefreshCw,
-  Reply,
-  SendHorizontal,
-  ShieldAlert,
-  Square,
-  Trash2,
-  X,
-} from "lucide-react";
+  IconArrowBackUp,
+  IconLayoutSidebarLeftExpand,
+  IconLayoutSidebarRightExpand,
+  IconPaperclip,
+  IconPencil,
+  IconRefresh,
+  IconSend,
+  IconShieldExclamation,
+  IconSquare,
+  IconTrash,
+  IconX,
+} from "@/components/ui/icons";
 
 import type {
   AgentKind,
@@ -82,7 +82,7 @@ function ShowSidebarButton({ onClick }: { onClick: () => void }) {
         aria-label="Show sidebar"
         title="Show sidebar"
       >
-        <PanelLeftOpen />
+        <IconLayoutSidebarLeftExpand />
       </Button>
     </div>
   );
@@ -99,17 +99,20 @@ function ShowDetailsButton({ onClick }: { onClick: () => void }) {
         aria-label="Show details"
         title="Show details"
       >
-        <PanelRightOpen />
+        <IconLayoutSidebarRightExpand />
       </Button>
     </div>
   );
 }
 
 /** An in-flight stream: natural-mode thinking plus the ordered pieces
- * (assistant text, activity blocks) both modes produce. */
+ * (assistant text, activity blocks) both modes produce. `stalled` counts
+ * seconds of CLI silence once the runner's watchdog fires (issue: hung model
+ * calls read as an eternal spinner otherwise). */
 interface StreamState {
   thinking: string;
   segments: StreamSegment[];
+  stalled: number | null;
 }
 
 /** One permission ask waiting for the user's decision (issue #28). */
@@ -254,8 +257,8 @@ function quoteOf(text: string): string {
     .join("\n");
 }
 
-/** Lucide `quote` icon, inlined for imperatively-built ask chips. */
-const QUOTE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/><path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/></svg>`;
+/** Tabler `quote` icon, inlined for imperatively-built ask chips. */
+const QUOTE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11h-4a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1h3a1 1 0 0 1 1 1v6c0 2.667 -1.333 4.333 -4 5"/><path d="M19 11h-4a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1h3a1 1 0 0 1 1 1v6c0 2.667 -1.333 4.333 -4 5"/></svg>`;
 
 /** Builds the inline ask chip: snippet + quote icon. Click asks for removal
  * (confirmation dialog); dragging is pointer-driven (ChatPane's manual
@@ -278,18 +281,27 @@ function buildAskChip(key: number, snippet: string): HTMLElement {
   return chip;
 }
 
+/** Composer skill chip look — one base, two states: armed is the blue
+ * highlight Backspace shows before removing the chip (no modal). */
+function skillChipClasses(armed: boolean): string {
+  const base =
+    "mr-0.5 inline-flex cursor-pointer select-none items-center rounded-[4px] border px-1.5 py-0.5 align-middle font-mono text-xs";
+  return armed
+    ? `${base} border-primary bg-primary/25 text-primary ring-1 ring-primary`
+    : `${base} border-primary/40 bg-primary/10 text-foreground`;
+}
+
 /** Builds the inline one-shot skill chip: the skill's name in terminal
  * (monospace) font inside a small rectangle. Display only — the skill's
  * CONTENT travels through the backend injection, never through the message
  * text. Lives inside the composer as a non-editable element; draggable like
- * an ask chip, click asks for removal. */
+ * an ask chip, Backspace or click removes it. */
 function buildSkillChip(name: string): HTMLElement {
   const chip = document.createElement("span");
   chip.setAttribute("data-skill-chip", name);
   chip.setAttribute("contenteditable", "false");
-  chip.setAttribute("title", "Drag to move · click to remove");
-  chip.className =
-    "mr-0.5 inline-flex cursor-pointer select-none items-center rounded-[4px] border border-primary/40 bg-primary/10 px-1.5 py-0.5 align-middle font-mono text-xs text-foreground";
+  chip.setAttribute("title", "Drag to move · Backspace or click to remove");
+  chip.className = skillChipClasses(false);
   chip.textContent = `/${name}`;
   return chip;
 }
@@ -466,6 +478,9 @@ export function ChatPane({
   /** A skill chip the user clicked — waiting for removal confirmation
    * (holds the skill's name; only one chip can exist at a time). */
   const [removingSkill, setRemovingSkill] = useState<string | null>(null);
+  /** The skill chip armed for Backspace removal: first Backspace highlights
+   * it blue, the second one deletes it — no confirmation dialog. */
+  const [skillChipArmed, setSkillChipArmed] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -560,7 +575,7 @@ export function ChatPane({
     let entry = streamsRef.current.get(conversationId);
     if (!entry) {
       entry = {
-        buffer: { thinking: "", segments: [] },
+        buffer: { thinking: "", segments: [], stalled: null },
         streaming: false,
         generationId: null,
         error: null,
@@ -704,6 +719,7 @@ export function ChatPane({
       setStream({
         thinking: entry.buffer.thinking,
         segments: [...entry.buffer.segments],
+        stalled: entry.buffer.stalled,
       });
       setStreamTodos(latestTodos(entry.buffer.segments));
     }
@@ -732,6 +748,7 @@ export function ChatPane({
     setStream({
       thinking: entry.buffer.thinking,
       segments: [...entry.buffer.segments],
+      stalled: entry.buffer.stalled,
     });
     setStreamTodos(latestTodos(entry.buffer.segments));
   }, []);
@@ -772,7 +789,7 @@ export function ChatPane({
     (conversationId: number, command: string, args: Record<string, unknown>) => {
       const entry = entryFor(conversationId);
       if (entry.streaming) return;
-      entry.buffer = { thinking: "", segments: [] };
+      entry.buffer = { thinking: "", segments: [], stalled: null };
       entry.error = null;
       entry.generationId = null;
       entry.streaming = true;
@@ -781,7 +798,7 @@ export function ChatPane({
       onErrorChanged(conversationId, false);
       setError(null);
       if (displayedIdRef.current === conversationId) {
-        setStream({ thinking: "", segments: [] });
+        setStream({ thinking: "", segments: [], stalled: null });
         setPermission(null);
         setStreamTodos(null);
         // Sending always means "show me the latest" — even if the user had
@@ -794,6 +811,10 @@ export function ChatPane({
       channel.onmessage = (event) => {
         // Stable for the conversation's lifetime — closures capture it.
         const live = entry;
+        // Any real progress clears the silence watchdog hint.
+        if (event.type !== "stalled" && live.buffer.stalled !== null) {
+          live.buffer.stalled = null;
+        }
         switch (event.type) {
           case "user_message":
             // A background conversation's thread reloads from the store on
@@ -896,6 +917,9 @@ export function ChatPane({
             break;
           case "title_changed":
             onConversationsChanged();
+            break;
+          case "stalled":
+            live.buffer.stalled = event.seconds;
             break;
           case "done": {
             live.streaming = false;
@@ -1211,6 +1235,7 @@ export function ChatPane({
         range.insertNode(chip);
         placeCaretAfterChip(chip);
         setInvokedSkill({ id: item.skillId, name });
+        setSkillChipArmed(false);
         setDraft(composerText(el));
         setSuggestions(null);
         el.focus();
@@ -1337,6 +1362,7 @@ export function ChatPane({
 
   const confirmRemoveSkill = useCallback(() => {
     setRemovingSkill(null);
+    setSkillChipArmed(false);
     const el = composerRef.current;
     if (!el) return;
     // Only one skill chip can exist — drop it and the one-shot attach.
@@ -1344,6 +1370,16 @@ export function ChatPane({
     setInvokedSkill(null);
     setDraft(composerText(el));
   }, []);
+
+  /** The armed (blue) look rides with the chip: re-apply whenever arming
+   * flips or the chip is replaced, so a fresh chip never inherits the
+   * highlight. */
+  useEffect(() => {
+    const chip = composerRef.current?.querySelector<HTMLElement>(
+      "[data-skill-chip]",
+    );
+    if (chip) chip.className = skillChipClasses(skillChipArmed);
+  }, [skillChipArmed, invokedSkill]);
 
   const send = useCallback(() => {
     if (!conversation) return;
@@ -1723,7 +1759,7 @@ export function ChatPane({
           </div>
         )}
         <h2 className="font-display text-9xl leading-none animate-fade-in">
-          Klepai
+          KLEPAI
         </h2>
       </section>
     );
@@ -1777,7 +1813,7 @@ export function ChatPane({
               aria-label="Rename conversation"
               title="Rename conversation"
             >
-              <Pencil className="h-3.5 w-3.5" />
+              <IconPencil className="h-3.5 w-3.5" />
             </Button>
             <Button
               variant="ghost"
@@ -1787,7 +1823,7 @@ export function ChatPane({
               aria-label="Delete conversation"
               title="Delete conversation"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <IconTrash className="h-3.5 w-3.5" />
             </Button>
             {!detailsOpen && <ShowDetailsButton onClick={onOpenDetails} />}
           </div>
@@ -1858,7 +1894,7 @@ export function ChatPane({
                     title="Retry"
                     className="h-6 shrink-0 gap-1 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
                   >
-                    <RefreshCw className="h-3 w-3" />
+                    <IconRefresh className="h-3 w-3" />
                     Retry
                   </Button>
                 )}
@@ -1893,9 +1929,9 @@ export function ChatPane({
         {isStreaming && streamTodos && <GoalProgressWidget items={streamTodos} />}
         {editing && (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-            <Pencil className="h-3.5 w-3.5 shrink-0" />
+            <IconPencil className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">
-              Editing your message — sending continues the conversation from here
+              Editing your message, sending continues the conversation from here
             </span>
             <Button
               variant="ghost"
@@ -1906,13 +1942,13 @@ export function ChatPane({
               aria-label="Cancel editing"
               title="Cancel editing"
             >
-              <X className="h-3.5 w-3.5" />
+              <IconX className="h-3.5 w-3.5" />
             </Button>
           </div>
         )}
         {replying && !editing && (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-1.5 text-xs">
-            <Reply className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <IconArrowBackUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate italic text-muted-foreground">
               {replying.snippet}
             </span>
@@ -1925,7 +1961,7 @@ export function ChatPane({
               aria-label="Cancel reply"
               title="Cancel reply"
             >
-              <X className="h-3.5 w-3.5" />
+              <IconX className="h-3.5 w-3.5" />
             </Button>
           </div>
         )}
@@ -1961,7 +1997,7 @@ export function ChatPane({
                   }}
                   className="shrink-0 text-muted-foreground hover:text-destructive"
                 >
-                  <X className="h-3 w-3" />
+                  <IconX className="h-3 w-3" />
                 </span>
               </button>
             ))}
@@ -2085,6 +2121,9 @@ export function ChatPane({
                 aria-multiline="true"
                 aria-label={editing ? "Edit message" : "Message"}
                 onInput={() => {
+                  // Typing disarms the chip — the next Backspace must
+                  // delete the freshly typed character, not the chip.
+                  setSkillChipArmed(false);
                   syncComposer();
                   detectSuggestion();
                 }}
@@ -2161,6 +2200,28 @@ export function ChatPane({
                       setSuggestions(null);
                       return;
                     }
+                  }
+                  // Backspace removes the one-shot skill chip in two steps,
+                  // no modal: first press arms it (blue), second press
+                  // deletes it. Only when no typed text remains — otherwise
+                  // Backspace keeps deleting characters.
+                  if (
+                    event.key === "Backspace" &&
+                    !event.nativeEvent.isComposing &&
+                    draft.length === 0 &&
+                    composerRef.current?.querySelector("[data-skill-chip]")
+                  ) {
+                    event.preventDefault();
+                    if (skillChipArmed) {
+                      composerRef.current
+                        ?.querySelector("[data-skill-chip]")
+                        ?.remove();
+                      setInvokedSkill(null);
+                      setSkillChipArmed(false);
+                    } else {
+                      setSkillChipArmed(true);
+                    }
+                    return;
                   }
                   // Enter sends; Shift+Enter inserts a newline; Escape
                   // leaves edit / reply mode and drops the ask chips.
@@ -2263,7 +2324,7 @@ export function ChatPane({
                   title="Attach files"
                   className="flex items-center rounded-md px-1.5 py-1 text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
                 >
-                  <Paperclip className="h-4 w-4" />
+                  <IconPaperclip className="h-4 w-4" />
                 </button>
               )}
               <button
@@ -2325,7 +2386,7 @@ export function ChatPane({
                     title="Stop generating"
                     className="animate-soft-pulse text-destructive transition-transform hover:scale-110 active:scale-95"
                   >
-                    <Square />
+                    <IconSquare />
                   </Button>
                 ) : (
                   <Button
@@ -2340,7 +2401,7 @@ export function ChatPane({
                     title={editing ? "Save edit (Enter)" : "Send (Enter)"}
                     className="transition-transform hover:scale-110 active:scale-95 disabled:hover:scale-100"
                   >
-                    {editing ? <Pencil /> : <SendHorizontal />}
+                    {editing ? <IconPencil /> : <IconSend />}
                   </Button>
                 )}
               </div>
@@ -2551,8 +2612,8 @@ function ModelPopup({
     serverId?: number;
     active: boolean;
   }[] = [
-    { key: "claude_code", label: "Claude Code", kind: "claude_code", active: conversation.agent_kind === "claude_code" },
-    { key: "codex", label: "Codex", kind: "codex", active: conversation.agent_kind === "codex" },
+    // Server models first — they are the point of Klepai; the CLIs are
+    // add-on brains.
     ...servers.map((server) => ({
       key: `server-${server.id}`,
       label: server.name,
@@ -2563,6 +2624,8 @@ function ModelPopup({
         (conversation.server_id === server.id ||
           (conversation.server_id === null && servers[0]?.id === server.id)),
     })),
+    { key: "claude_code", label: "Claude Code", kind: "claude_code", active: conversation.agent_kind === "claude_code" },
+    { key: "codex", label: "Codex", kind: "codex", active: conversation.agent_kind === "codex" },
   ];
 
   const currentModel = conversation.model_id ?? "default";
@@ -2647,7 +2710,7 @@ function PermissionAskPanel({
   return (
     <div className="min-w-0 flex-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
       <div className="flex items-start gap-2">
-        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <IconShieldExclamation className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-foreground">
             The agent wants to {permissionVerb(ask.toolName)}:
@@ -2731,6 +2794,12 @@ function StreamingMessage({ stream }: { stream: StreamState }) {
           ) : (
             <StreamingActivity key={index} segment={segment} />
           ),
+        )}
+        {stream.stalled != null && (
+          <p className="animate-fade-in text-xs text-muted-foreground">
+            No response for {stream.stalled}s. The agent may be stuck; you can
+            stop it and send again.
+          </p>
         )}
       </div>
     </div>

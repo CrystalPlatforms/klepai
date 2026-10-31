@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { IconArrowDown, IconArrowUp, IconArrowsSort } from "@/components/ui/icons";
 
 import type { CsvRow } from "@/lib/klepaiBlocks";
 import { cn } from "@/lib/utils";
@@ -61,12 +61,12 @@ export function DataTable({ header, rows }: { header: CsvRow; rows: CsvRow[] }) 
                       <span className="whitespace-nowrap">{cell}</span>
                       {active ? (
                         sort?.dir === 1 ? (
-                          <ArrowDown className="h-3 w-3" />
+                          <IconArrowDown className="h-3 w-3" />
                         ) : (
-                          <ArrowUp className="h-3 w-3" />
+                          <IconArrowUp className="h-3 w-3" />
                         )
                       ) : (
-                        <ArrowUpDown className="h-3 w-3 opacity-40" />
+                        <IconArrowsSort className="h-3 w-3 opacity-40" />
                       )}
                     </button>
                   </th>

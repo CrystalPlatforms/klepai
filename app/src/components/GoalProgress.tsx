@@ -1,4 +1,4 @@
-import { Circle, CircleCheck, CircleDotDashed } from "lucide-react";
+import { IconCircle, IconCircleCheck, IconCircleDashed } from "@/components/ui/icons";
 
 import type { TodoItem } from "@/lib/klepaiBlocks";
 import { cn } from "@/lib/utils";
@@ -48,11 +48,11 @@ export function GoalProgress({ items }: { items: TodoItem[] }) {
             )}
           >
             {item.status === "done" ? (
-              <CircleCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+              <IconCircleCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
             ) : item.status === "active" ? (
-              <CircleDotDashed className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-pulse text-primary" />
+              <IconCircleDashed className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-pulse text-primary" />
             ) : (
-              <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+              <IconCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
             )}
             <span className={cn(item.status === "done" && "line-through")}>
               {item.label}
@@ -100,11 +100,11 @@ export function GoalProgressWidget({ items }: { items: TodoItem[] }) {
               )}
             >
               {item.status === "done" ? (
-                <CircleCheck className="h-3 w-3 shrink-0 text-primary" />
+                <IconCircleCheck className="h-3 w-3 shrink-0 text-primary" />
               ) : item.status === "active" ? (
-                <CircleDotDashed className="h-3 w-3 shrink-0 animate-pulse text-primary" />
+                <IconCircleDashed className="h-3 w-3 shrink-0 animate-pulse text-primary" />
               ) : (
-                <Circle className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                <IconCircle className="h-3 w-3 shrink-0 text-muted-foreground/50" />
               )}
               <span
                 className={cn(

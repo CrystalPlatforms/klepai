@@ -734,17 +734,6 @@ impl Store {
         Ok(())
     }
 
-    /// Sum of content sizes across enabled skills (0 when none).
-    pub fn enabled_skill_size(&self) -> Result<i64> {
-        self.conn
-            .query_row(
-                "SELECT COALESCE(SUM(size_bytes), 0) FROM skills WHERE enabled = 1",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(StoreError::from)
-    }
-
     // ---- Allowed rules (issue #28) -----------------------------------------
 
     /// Records one standing permission. `conversation_id = None` marks the

@@ -209,6 +209,9 @@ pub async fn respond_permission(
             tool_name,
             conversation_id,
         } => {
+            crate::agent::agent_log(&format!(
+                "permission-answer request_id={request_id} allow={allow} tool={tool_name}"
+            ));
             stdin.write_line(&control_response_line(&request_id, allow, &input_json));
             let target = permission_target(&tool_name, &input_json);
             (tool_name, target, conversation_id)
@@ -567,6 +570,13 @@ pub fn list_cli_models(agent_kind: String) -> CmdResult<Vec<String>> {
     let Some(home) = home_dir() else {
         return Ok(vec!["default".to_string()]);
     };
+    Ok(cli_models_in_home(kind, &home))
+}
+
+/// The model scan itself, parameterized by the home directory: the command
+/// runs it against the real home; tests seed a fake one, because a clean CI
+/// runner has no ~/.codex history and the developer's home is not a fixture.
+pub fn cli_models_in_home(kind: AgentKind, home: &Path) -> Vec<String> {
     let mut models = vec!["default".to_string()];
     let push = |models: &mut Vec<String>, model: &str| {
         if !model.is_empty() && !models.iter().any(|known| known == model) {
@@ -625,7 +635,7 @@ pub fn list_cli_models(agent_kind: String) -> CmdResult<Vec<String>> {
             }
         }
     }
-    Ok(models)
+    models
 }
 
 /// Pulls every `"key":"value"` string out of JSON text (sessions are JSONL;
@@ -950,6 +960,9 @@ pub enum ChatStreamEvent {
     /// `Done` appends exactly one message, an agent run persists many
     /// segments, so the UI reloads instead of appending.
     AgentDone { aborted: bool, error: Option<String> },
+    /// The agent's CLI went silent mid-run (see `agent::AgentEvent::Stalled`)
+    /// — the UI nudges the user toward Stop instead of an endless spinner.
+    Stalled { seconds: u64 },
     Error { message: String },
 }
 
@@ -1017,20 +1030,28 @@ pub fn resolve_target(
 }
 
 /// Skills injection — the one mapping every server-model request goes
-/// through: the enabled set (capped by `SIZE_CAP_BYTES`) rides on every
-/// request, and a one-shot invoked skill joins it regardless of the toggle.
-/// An empty result leaves the prompt untouched.
+/// through (issue #34): prompts carry only the enabled set's index cards;
+/// a server brain with tools reads the full text on demand via the
+/// `read_skill` tool. A one-shot invoked skill from the `/` palette joins
+/// as direct content on this one request regardless of the toggle. An
+/// empty result leaves the prompt untouched.
 pub fn apply_skill_injection(
     store: &Store,
     skills: &SkillStore,
     options: &mut ChatOptions,
     skill_id: Option<i64>,
 ) -> crate::skills::Result<()> {
-    let mut prompts = skills.enabled_prompts(store)?;
+    let mut block = skills::index_block(&skills.enabled_cards(store)?);
     if let Some(id) = skill_id {
-        prompts.push(skills.skill_prompt(store, id)?);
+        let prompt = skills.skill_prompt(store, id)?;
+        let one_shot = skills::prompt_block(std::slice::from_ref(&prompt));
+        if block.is_empty() {
+            block = one_shot;
+        } else {
+            block.push('\n');
+            block.push_str(&one_shot);
+        }
     }
-    let block = skills::prompt_block(&prompts);
     options.system_prompt = skills::with_skill_block(options.system_prompt.take(), &block);
     // The UI-directives hint rides on every server-model request too (issue #22).
     options.system_prompt = Some(with_ui_hint(options.system_prompt.take().unwrap_or_default()));
@@ -1299,21 +1320,27 @@ pub async fn send_agent_message(
             .list_messages(conversation_id)
             .map_err(|e| e.to_string())?;
         let model = conversation.model_id.clone();
-        // Enabled skills ride on every agent send; the one-shot joins them.
+        // Enabled skills ride on every agent send as index cards only — the
+        // CLI reads a skill's full text on demand by opening the listed
+        // library file; the one-shot joins as direct content (issue #34).
         let skills_block = {
-            let mut prompts = state
-                .skills
-                .enabled_prompts(&guard)
-                .map_err(|e| e.to_string())?;
+            let mut block = skills::cli_index_block(
+                &state.skills.enabled_cards(&guard).map_err(|e| e.to_string())?,
+            );
             if let Some(id) = skill_id {
-                prompts.push(
-                    state
-                        .skills
-                        .skill_prompt(&guard, id)
-                        .map_err(|e| e.to_string())?,
-                );
+                let prompt = state
+                    .skills
+                    .skill_prompt(&guard, id)
+                    .map_err(|e| e.to_string())?;
+                let one_shot = skills::prompt_block(std::slice::from_ref(&prompt));
+                if block.is_empty() {
+                    block = one_shot;
+                } else {
+                    block.push('\n');
+                    block.push_str(&one_shot);
+                }
             }
-            skills::prompt_block(&prompts)
+            block
         };
         (
             kind,
@@ -1428,6 +1455,9 @@ pub async fn send_agent_message(
                                     Ok(ref rules)
                                         if auto_allowed(rules, &tool_name, &target) =>
                                     {
+                                        crate::agent::agent_log(&format!(
+                                            "permission auto-allow (rule) request_id={request_id} tool={tool_name} target={target}"
+                                        ));
                                         permission_stdin.write_line(&control_response_line(
                                             &request_id, true, &input_json,
                                         ));
@@ -1458,6 +1488,10 @@ pub async fn send_agent_message(
                             }
                             // The runner folds Failed events into the outcome.
                             AgentEvent::Failed { .. } => Some(ChatStreamEvent::ActivityEnd),
+                            // Silence watchdog — rides to the UI as-is.
+                            AgentEvent::Stalled { seconds } => {
+                                Some(ChatStreamEvent::Stalled { seconds })
+                            }
                             // Turn boundary — the runner closed stdin, the
                             // UI learns nothing new.
                             AgentEvent::TurnEnd => None,
@@ -1703,26 +1737,49 @@ async fn run_tool_loop(
             let arguments_json =
                 serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".into());
             let target = permission_target(&call.name, &arguments_json);
-            let allowed = {
-                let rules = {
-                    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
-                    guard
-                        .rules_for_conversation(conversation_id)
-                        .map_err(|e| e.to_string())?
-                };
-                if auto_allowed(&rules, &call.name, &target) {
-                    true
-                } else {
-                    ask_permission(state, channel, conversation_id, &call.name, &target, abort)
-                        .await
+            // read_skill is how a server brain pulls a skill's full text
+            // (issue #34): a library read, not a project action — it never
+            // asks for permission, and disabled/unknown names are refused
+            // by the SkillStore itself.
+            let result = if call.name == "read_skill" {
+                match call
+                    .arguments
+                    .get("skill")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|name| !name.trim().is_empty())
+                {
+                    Some(name) => {
+                        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+                        match state.skills.skill_prompt_by_name(&guard, &name) {
+                            Ok(prompt) => prompt.content,
+                            Err(error) => format!("error: {error}"),
+                        }
+                    }
+                    None => "error: read_skill needs a skill name from the skills list".into(),
                 }
-            };
-            let result = if allowed {
-                crate::tools::execute(cwd, &call).await
             } else {
-                format!(
-                    "error: the user denied running `{target}` — do not retry it without asking."
-                )
+                let allowed = {
+                    let rules = {
+                        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+                        guard
+                            .rules_for_conversation(conversation_id)
+                            .map_err(|e| e.to_string())?
+                    };
+                    if auto_allowed(&rules, &call.name, &target) {
+                        true
+                    } else {
+                        ask_permission(state, channel, conversation_id, &call.name, &target, abort)
+                            .await
+                    }
+                };
+                if allowed {
+                    crate::tools::execute(cwd, &call).await
+                } else {
+                    format!(
+                        "error: the user denied running `{target}` — do not retry it without asking."
+                    )
+                }
             };
             let detail = format!("{head}\n\n→ {}", crate::tools::cap_for_detail(&result));
             let _ = channel.send(ChatStreamEvent::ActivityAppend { detail: detail.clone() });
@@ -2095,5 +2152,49 @@ fn collect_project_files(
             }
             out.push(relative);
         }
+    }
+}
+
+#[cfg(test)]
+mod skill_injection_tests {
+    use super::apply_skill_injection;
+    use crate::gateway::ChatOptions;
+    use crate::skills::test_support::Scratch;
+
+    fn options(base: Option<String>) -> ChatOptions {
+        ChatOptions {
+            system_prompt: base,
+            temperature: None,
+            context_len: None,
+            thinking: true,
+        }
+    }
+
+    #[test]
+    fn injection_carries_the_index_and_one_shot_never_enabled_content() {
+        let scratch = Scratch::open("injection");
+        let on = scratch.import_markdown("alpha", "alpha does things", "alpha body", true);
+        scratch.import_markdown("beta", "beta does things", "beta body", false);
+
+        // Plain send: the index card rides, the enabled skill's body and
+        // the disabled skill stay out entirely.
+        let mut plain = options(Some("base prompt".into()));
+        apply_skill_injection(&scratch.store, &scratch.skills, &mut plain, None).unwrap();
+        let prompt = plain.system_prompt.unwrap();
+        assert!(prompt.starts_with("base prompt"));
+        assert!(prompt.contains("## Skills"));
+        assert!(prompt.contains("alpha does things"));
+        assert!(!prompt.contains("alpha body"));
+        assert!(!prompt.contains("beta does things"));
+
+        // One-shot invoked skill: its content joins for this request only.
+        let mut invoked = options(None);
+        apply_skill_injection(&scratch.store, &scratch.skills, &mut invoked, Some(on.id))
+            .unwrap();
+        let prompt = invoked.system_prompt.unwrap();
+        assert!(prompt.contains("## Skills"));
+        assert!(prompt.contains("## Active skills"));
+        assert!(prompt.contains("alpha body"));
+        assert!(!prompt.contains("beta body"));
     }
 }

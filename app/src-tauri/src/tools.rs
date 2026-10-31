@@ -87,6 +87,20 @@ pub fn tool_specs() -> Value {
                     "required": ["command"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_skill",
+                "description": "Read one enabled Klepai skill's full instructions by its exact name from the skills list. Returns the skill's markdown body — call it before following a skill.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill": { "type": "string", "description": "The skill's exact name from the skills list." }
+                    },
+                    "required": ["skill"]
+                }
+            }
         }
     ])
 }

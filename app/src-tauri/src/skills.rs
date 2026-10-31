@@ -2,9 +2,12 @@
 //!
 //! Deep module: import, listing, toggle, content read/write, delete and
 //! size accounting all go through it; nothing else touches skill files.
-//! Klepai never executes skill scripts — it only stores them and hands the
-//! instruction text to the consumer at send time: the server-model system
-//! prompt and the agent CLI prompt (see [`SkillPrompt`]).
+//! Klepai never executes skill scripts — it only stores them and decides
+//! how an assistant brain may read them (issue #34): prompts carry only a
+//! name-and-description index, and the brain pulls a skill's full text on
+//! demand — server models through the `read_skill` tool, agent CLIs by
+//! opening the library file listed in the index. Only an explicit one-shot
+//! invocation from the `/` palette attaches content directly.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,13 +18,19 @@ use crate::store::{Skill, Store, StoreError};
 
 pub type Result<T> = std::result::Result<T, SkillError>;
 
-/// Total content budget for *enabled* skills. Passing it is the owner's cue
-/// to prune — the cap keeps request assembly from bloating system prompts,
-/// and the Settings → Skills section surfaces the warning.
-pub const SIZE_CAP_BYTES: i64 = 32 * 1024;
+/// One skill's index card: what a prompt carries instead of the skill's
+/// content — identity plus how to read the full text on demand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillCard {
+    pub name: String,
+    pub description: String,
+    /// Library instruction file (SKILL.md inside a package folder, the
+    /// file itself for markdown skills) — the path a CLI brain opens.
+    pub path: String,
+}
 
-/// One skill's instructions as request assembly consumes them: what a
-/// system prompt or an agent prompt receives (frontmatter stripped).
+/// One skill's full instructions: what `read_skill` returns and what a
+/// one-shot palette attach puts on the request (frontmatter stripped).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillPrompt {
     pub name: String,
@@ -29,27 +38,21 @@ pub struct SkillPrompt {
 }
 
 impl SkillStore {
-    /// The enabled set, capped. Skills travel in listing order; one that
-    /// would push the running total past [`SIZE_CAP_BYTES`] is skipped (a
-    /// later smaller one can still fit). An unreadable library file skips
-    /// that one skill rather than failing the whole send.
-    pub fn enabled_prompts(&self, store: &Store) -> Result<Vec<SkillPrompt>> {
-        let mut prompts = Vec::new();
-        let mut total = 0i64;
-        for skill in store.list_skills()?.into_iter().filter(|s| s.enabled) {
-            if total + skill.size_bytes > SIZE_CAP_BYTES {
-                continue;
-            }
-            let Ok(content) = self.content(store, skill.id) else {
-                continue;
-            };
-            total += skill.size_bytes;
-            prompts.push(SkillPrompt {
+    /// The enabled set as index cards, in listing order. No content is
+    /// read here — cards are the only thing that rides on every request.
+    pub fn enabled_cards(&self, store: &Store) -> Result<Vec<SkillCard>> {
+        Ok(store
+            .list_skills()?
+            .into_iter()
+            .filter(|skill| skill.enabled)
+            .map(|skill| SkillCard {
+                path: Self::instruction_file(&skill)
+                    .to_string_lossy()
+                    .into_owned(),
                 name: skill.name,
-                content,
-            });
-        }
-        Ok(prompts)
+                description: skill.description,
+            })
+            .collect())
     }
 
     /// One skill's instructions for a single-invocation attach. A DISABLED
@@ -66,6 +69,23 @@ impl SkillStore {
             name: skill.name,
         })
     }
+
+    /// [`skill_prompt`] by name — how the `read_skill` tool resolves its
+    /// argument. Exact match first, then case-insensitive; a disabled or
+    /// unknown name is refused either way.
+    pub fn skill_prompt_by_name(&self, store: &Store, name: &str) -> Result<SkillPrompt> {
+        let skills = store.list_skills()?;
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .or_else(|| {
+                skills
+                    .iter()
+                    .find(|skill| skill.name.eq_ignore_ascii_case(name))
+            })
+            .ok_or_else(|| SkillError::UnknownSkill(name.to_string()))?;
+        self.skill_prompt(store, skill.id)
+    }
 }
 
 /// Formats prompts into the block that rides in a system/agent prompt.
@@ -78,6 +98,48 @@ pub fn prompt_block(prompts: &[SkillPrompt]) -> String {
         String::from("## Active skills\n\nFollow these instructions for this request:\n");
     for prompt in prompts {
         block.push_str(&format!("\n### {}\n\n{}\n", prompt.name, prompt.content.trim_end()));
+    }
+    block
+}
+
+/// Formats the index cards for a server-model prompt: names, descriptions
+/// and the read_skill call — never the content. Empty input yields an
+/// empty string — the caller then injects nothing.
+pub fn index_block(cards: &[SkillCard]) -> String {
+    if cards.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "## Skills\n\n\
+         Enabled skills you may use. When the user's task matches one, call \
+         the `read_skill` tool with its exact name first — its instructions \
+         arrive as the tool result. Until then none of their content is in \
+         this conversation. Unknown or disabled names are refused.\n",
+    );
+    for card in cards {
+        block.push_str(&format!("- {}: {}\n", card.name, card.description));
+    }
+    block
+}
+
+/// Formats the index cards for an agent-CLI prompt: names, descriptions and
+/// the library file the CLI opens with its own Read tool — never the
+/// content. Empty input yields an empty string.
+pub fn cli_index_block(cards: &[SkillCard]) -> String {
+    if cards.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "## Skills\n\n\
+         Enabled skills you may use. When the user's task matches one, open \
+         its file with your Read tool first and follow the instructions \
+         inside. Until then none of their content is in this conversation.\n",
+    );
+    for card in cards {
+        block.push_str(&format!(
+            "- {}: {} — file: {}\n",
+            card.name, card.description, card.path
+        ));
     }
     block
 }
@@ -105,6 +167,8 @@ pub enum SkillError {
     EmptyName,
     #[error("skill “{0}” is disabled — enable it in Settings → Skills first")]
     DisabledSkill(String),
+    #[error("no skill named “{0}” — pick a name from the skills list")]
+    UnknownSkill(String),
     #[error("unsupported skill file: {0} — import a .skill package or a .md file")]
     UnsupportedExtension(String),
     #[error("unreadable archive: {0}")]
@@ -251,12 +315,6 @@ impl SkillStore {
         }
         store.delete_skill(id)?;
         Ok(())
-    }
-
-    /// Total content bytes of the *enabled* set — what the Settings cap
-    /// warning watches. Frontmatter never counts (it is not injected).
-    pub fn enabled_total_size(&self, store: &Store) -> Result<i64> {
-        Ok(store.enabled_skill_size()?)
     }
 
     fn import_package(&self, store: &Store, source: &Path) -> Result<Skill> {
@@ -459,5 +517,155 @@ fn slugify(name: &str) -> String {
         "skill".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! Scratch Store + SkillStore for skill tests across modules: each
+    //! instance gets its own temp directory (namespaced by test name and
+    //! pid, so in-process parallel runs never collide) and removes it on
+    //! drop.
+
+    use std::path::PathBuf;
+
+    use super::*;
+
+    pub struct Scratch {
+        pub skills: SkillStore,
+        pub store: Store,
+        pub dir: PathBuf,
+    }
+
+    impl Scratch {
+        pub fn open(test: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("klepai-skills-{}-{test}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let skills = SkillStore::open(&dir.join("lib")).expect("skill library");
+            let store = Store::open(&dir.join("store.db")).expect("store");
+            Self { skills, store, dir }
+        }
+
+        /// Imports a markdown skill with frontmatter metadata and flips
+        /// its enabled flag to the given state.
+        pub fn import_markdown(
+            &self,
+            name: &str,
+            description: &str,
+            body: &str,
+            enabled: bool,
+        ) -> Skill {
+            let source = self.dir.join(format!("source-{name}.md"));
+            std::fs::write(
+                &source,
+                format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"),
+            )
+            .expect("write source markdown");
+            let skill = self.skills.import(&self.store, &source).expect("import");
+            self.skills
+                .set_enabled(&self.store, skill.id, enabled)
+                .expect("toggle");
+            self.store.get_skill(skill.id).expect("reload")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::test_support::Scratch;
+
+    #[test]
+    fn enabled_cards_list_only_enabled_skills_at_their_library_paths() {
+        let scratch = Scratch::open("cards");
+        let on = scratch.import_markdown("alpha", "alpha does things", "alpha body", true);
+        let _off = scratch.import_markdown("beta", "beta does things", "beta body", false);
+
+        let cards = scratch.skills.enabled_cards(&scratch.store).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].name, "alpha");
+        assert_eq!(cards[0].description, "alpha does things");
+        assert!(cards[0].path.ends_with("alpha.md"));
+        assert!(Path::new(&cards[0].path).starts_with(&scratch.dir));
+        assert_eq!(cards[0].name, on.name);
+    }
+
+    #[test]
+    fn index_block_names_skills_and_read_skill_but_carries_no_content() {
+        let scratch = Scratch::open("index");
+        scratch.import_markdown("alpha", "alpha does things", "alpha body", true);
+
+        let cards = scratch.skills.enabled_cards(&scratch.store).unwrap();
+        let block = index_block(&cards);
+        assert!(block.contains("## Skills"));
+        assert!(block.contains("read_skill"));
+        assert!(block.contains("- alpha: alpha does things"));
+        assert!(!block.contains("alpha body"));
+        // No enabled skills — no block at all.
+        assert_eq!(index_block(&[]), "");
+    }
+
+    #[test]
+    fn cli_index_block_points_at_files_instead_of_the_tool() {
+        let scratch = Scratch::open("cli-index");
+        scratch.import_markdown("alpha", "alpha does things", "alpha body", true);
+
+        let cards = scratch.skills.enabled_cards(&scratch.store).unwrap();
+        let block = cli_index_block(&cards);
+        assert!(block.contains(&cards[0].path));
+        assert!(block.contains("Read tool"));
+        assert!(!block.contains("read_skill"));
+        assert!(!block.contains("alpha body"));
+        assert_eq!(cli_index_block(&[]), "");
+    }
+
+    #[test]
+    fn read_skill_resolves_by_name_and_refuses_unknown_or_disabled() {
+        let scratch = Scratch::open("read-by-name");
+        let on = scratch.import_markdown("alpha", "alpha does things", "alpha body", true);
+        scratch.import_markdown("beta", "beta does things", "beta body", false);
+
+        let prompt = scratch.skills.skill_prompt_by_name(&scratch.store, "alpha").unwrap();
+        assert_eq!(prompt.content.trim(), "alpha body");
+        // Case-insensitive fallback resolves the same skill.
+        let ci = scratch.skills.skill_prompt_by_name(&scratch.store, "ALPHA").unwrap();
+        assert_eq!(ci, prompt);
+        assert_eq!(prompt.name, on.name);
+
+        match scratch.skills.skill_prompt_by_name(&scratch.store, "nope") {
+            Err(SkillError::UnknownSkill(name)) => assert_eq!(name, "nope"),
+            other => panic!("expected UnknownSkill, got {other:?}"),
+        }
+        match scratch.skills.skill_prompt_by_name(&scratch.store, "beta") {
+            Err(SkillError::DisabledSkill(name)) => assert_eq!(name, "beta"),
+            other => panic!("expected DisabledSkill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_shot_prompt_block_still_attaches_full_content() {
+        let scratch = Scratch::open("one-shot");
+        scratch.import_markdown("alpha", "alpha does things", "alpha body", true);
+
+        let prompt = scratch
+            .skills
+            .skill_prompt_by_name(&scratch.store, "alpha")
+            .unwrap();
+        let block = prompt_block(std::slice::from_ref(&prompt));
+        assert!(block.contains("## Active skills"));
+        assert!(block.contains("alpha body"));
+        // The merge still treats an empty block as "inject nothing".
+        assert_eq!(with_skill_block(Some("base".into()), ""), Some("base".into()));
+        assert_eq!(
+            with_skill_block(Some("base".into()), &block),
+            Some(format!("base\n\n{block}"))
+        );
     }
 }

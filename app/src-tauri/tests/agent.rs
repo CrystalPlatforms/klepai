@@ -403,7 +403,7 @@ impl AgentAdapter for PromptSpy {
 
 #[tokio::test]
 async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
-    use klepai_lib::skills::{prompt_block, SkillStore};
+    use klepai_lib::skills::{cli_index_block, SkillStore};
     use klepai_lib::store::Store;
 
     let dir = std::env::temp_dir().join(format!(
@@ -415,20 +415,23 @@ async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
     let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
-    // The composition send_agent_message performs: the enabled block (plus a
-    // one-shot, none here) prepended to the prompt the CLI receives.
-    let import = |name: &str, body: &str| {
+    // The composition send_agent_message performs: the enabled index block
+    // (plus a one-shot, none here) prepended to the prompt the CLI receives.
+    let import = |name: &str, description: &str, body: &str| {
         let source = dir.join(format!("{name}.md"));
-        std::fs::write(&source, format!("---\nname: {name}\n---\n\n{body}"))
-            .expect("fixture should write");
+        std::fs::write(
+            &source,
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}"),
+        )
+        .expect("fixture should write");
         skills.import(&store, &source).expect("import should succeed").id
     };
-    let enabled = import("formatter", "Format every output as a table.");
-    let disabled = import("censor", "Never mention the deadline.");
+    let enabled = import("formatter", "formats output", "Format every output as a table.");
+    let disabled = import("censor", "keeps secrets", "Never mention the deadline.");
     skills.set_enabled(&store, enabled, true).expect("enable");
     skills.set_enabled(&store, disabled, false).expect("disable");
 
-    let block = prompt_block(&skills.enabled_prompts(&store).expect("prompts"));
+    let block = cli_index_block(&skills.enabled_cards(&store).expect("cards"));
     let prompt = klepai_lib::agent::prompt_with_skills("Fix the failing test.", &block);
 
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -450,14 +453,19 @@ async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
     .expect("spy run should complete");
 
     let handed_off = captured.lock().expect("spy lock").clone();
+    let library_path = dir.join("skills").join("formatter.md");
     assert!(
-        handed_off.contains("## Active skills")
-            && handed_off.contains("### formatter")
-            && handed_off.contains("Format every output as a table."),
-        "enabled skills ride in the prompt the adapter hands to the CLI"
+        handed_off.contains("## Skills")
+            && handed_off.contains("- formatter: formats output")
+            && handed_off.contains(&format!("file: {}", library_path.display())),
+        "enabled skills ride as index cards with their library file path"
     );
     assert!(
-        !handed_off.contains("deadline"),
+        !handed_off.contains("as a table"),
+        "the skill's content enters only when the CLI reads the file itself"
+    );
+    assert!(
+        !handed_off.contains("deadline") && !handed_off.contains("censor"),
         "disabled skills never reach the handoff"
     );
     assert!(
@@ -503,16 +511,61 @@ async fn missing_binary_returns_a_structured_error() {
 
 #[test]
 fn cli_model_detection_lists_real_models() {
-    let codex = klepai_lib::commands::list_cli_models("codex".into()).unwrap();
-    println!("codex models: {codex:?}");
-    assert!(
-        codex.contains(&"gpt-5.6-terra".to_string())
-            && codex.contains(&"gpt-5.6-luna".to_string()),
-        "session history models must be detected: {codex:?}"
-    );
-    let claude = klepai_lib::commands::list_cli_models("claude_code".into()).unwrap();
-    println!("claude models: {claude:?}");
+    use klepai_lib::commands::cli_models_in_home;
+    // A seeded fake home: the scan must recognize the CLIs' real config and
+    // history shapes (settings.json env keys, config.toml model lines,
+    // history/rollout "model":"slug" JSON). The developer's real home is not
+    // a fixture, and a clean CI runner has no ~/.codex state at all.
+    let dir = std::env::temp_dir().join(format!(
+        "klepai-cli-models-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".claude")).expect("claude dir should create");
+    std::fs::create_dir_all(dir.join(".codex/sessions/2026/10")).expect("codex dirs should create");
+    std::fs::write(
+        dir.join(".claude/settings.json"),
+        r#"{"env":{"ANTHROPIC_MODEL":"m-opus","ANTHROPIC_DEFAULT_SONNET_MODEL":"m-sonnet","OTHER_KEY":"not-a-model"}}"#,
+    )
+    .expect("settings fixture should write");
+    std::fs::write(
+        dir.join(".codex/config.toml"),
+        "model = \"gpt-5.6-terra\"\n\n[profiles.fast]\nmodel = \"gpt-5.6-luna\"\n",
+    )
+    .expect("config fixture should write");
+    std::fs::write(
+        dir.join(".codex/history.jsonl"),
+        "{\"model\":\"gpt-5.6-mars\"}\n{\"model_key\":\"gpt-not\"}\n",
+    )
+    .expect("history fixture should write");
+    std::fs::write(
+        dir.join(".codex/sessions/2026/10/rollout.jsonl"),
+        "{\"payload\":{\"model\":\"gpt-5.6-venus\"}}\n",
+    )
+    .expect("rollout fixture should write");
+
+    let claude = cli_models_in_home(AgentKind::ClaudeCode, &dir);
     assert!(claude.contains(&"default".to_string()));
+    assert!(
+        claude.contains(&"m-opus".to_string()) && claude.contains(&"m-sonnet".to_string()),
+        "settings env models must be detected: {claude:?}"
+    );
+    assert!(
+        !claude.contains(&"not-a-model".to_string()),
+        "non-model env keys must be ignored: {claude:?}"
+    );
+
+    let codex = cli_models_in_home(AgentKind::Codex, &dir);
+    for expected in ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-mars", "gpt-5.6-venus"] {
+        assert!(
+            codex.contains(&expected.to_string()),
+            "{expected} must be detected: {codex:?}"
+        );
+    }
+    assert!(
+        !codex.contains(&"gpt-not".to_string()),
+        "near-miss keys must not leak values: {codex:?}"
+    );
 }
 
 #[test]

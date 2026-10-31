@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { MessageSquare, PanelLeftClose, Pencil, Plus, Search, Settings, Trash2 } from "lucide-react";
+import { IconLayoutSidebarLeftCollapse, IconMessage, IconPencil, IconPlus, IconSearch, IconSettings, IconTrash } from "@/components/ui/icons";
 
 import type { Conversation, SearchHit } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -122,7 +122,7 @@ export function Sidebar({
         )}
       >
         <header className="flex items-center gap-1 px-4 py-2.5">
-          <h1 className="font-display text-lg">Klepai</h1>
+          <h1 className="font-display text-lg">KLEPAI</h1>
           <div className="ml-auto flex items-center">
             <Button
               variant="ghost"
@@ -132,7 +132,7 @@ export function Sidebar({
               aria-label="Hide sidebar"
               title="Hide sidebar"
             >
-              <PanelLeftClose />
+              <IconLayoutSidebarLeftCollapse />
             </Button>
             <Button
               variant="ghost"
@@ -142,7 +142,7 @@ export function Sidebar({
               aria-label="New conversation"
               title="New conversation"
             >
-              <Plus />
+              <IconPlus />
             </Button>
             <Button
               variant="ghost"
@@ -152,14 +152,14 @@ export function Sidebar({
               aria-label="Settings"
               title="Settings"
             >
-              <Settings />
+              <IconSettings />
             </Button>
           </div>
         </header>
 
         <div className="px-3 pb-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
               value={query}
@@ -186,7 +186,7 @@ export function Sidebar({
                   className="block w-full rounded-md px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/50"
                 >
                   <div className="flex items-center gap-1.5 truncate text-xs font-medium text-sidebar-foreground">
-                    <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <IconMessage className="h-3 w-3 shrink-0 text-muted-foreground" />
                     <span className="truncate">{hit.conversation_title}</span>
                   </div>
                   <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
@@ -244,7 +244,7 @@ export function Sidebar({
                       setRenameDraft(conversation.title);
                     }}
                   >
-                    <Pencil className="mr-2 h-4 w-4" />
+                    <IconPencil className="mr-2 h-4 w-4" />
                     Rename
                   </ContextMenuItem>
                   <ContextMenuSeparator />
@@ -252,7 +252,7 @@ export function Sidebar({
                     className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                     onSelect={() => setDeleting(conversation)}
                   >
-                    <Trash2 className="mr-2 h-4 w-4" />
+                    <IconTrash className="mr-2 h-4 w-4" />
                     Delete
                   </ContextMenuItem>
                 </ContextMenuContent>

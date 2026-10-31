@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
-import { Check, ChevronDown } from "lucide-react";
+import { IconCheck, IconChevronDown } from "@/components/ui/icons";
 
 import { cn } from "@/lib/utils";
 
@@ -27,7 +27,7 @@ function SelectTrigger({
     >
       <span className="min-w-0 flex-1 truncate text-left">{children}</span>
       <SelectPrimitive.Icon asChild>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
   );
@@ -72,7 +72,7 @@ function SelectItem({
     >
       <span className="min-w-0 flex-1 truncate">{children}</span>
       <SelectPrimitive.ItemIndicator className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
-        <Check className="h-3.5 w-3.5" />
+        <IconCheck className="h-3.5 w-3.5" />
       </SelectPrimitive.ItemIndicator>
     </SelectPrimitive.Item>
   );
