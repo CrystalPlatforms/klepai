@@ -120,10 +120,20 @@ pub fn plain(path: &Path) -> PathBuf {
 /// Runs `git <args>` (optionally in `dir`) and returns the raw output.
 /// Direct arg vector, no shell — Windows has no `/bin/sh`, and git never
 /// needs one.
+///
+/// Every call carries an explicit identity — the same one `commit` passes
+/// with `-c` — because git validates the committer ident before a merge
+/// starts, and machines without any global identity (CI runners, fresh
+/// installs) would fail the merge outright instead of reaching the conflict
+/// it exists to exercise.
 async fn git(dir: Option<&Path>, args: &[&str]) -> Result<std::process::Output, String> {
     let mut command = tokio::process::Command::new("git");
     command
         .args(args)
+        .env("GIT_AUTHOR_NAME", "Klepai")
+        .env("GIT_AUTHOR_EMAIL", "klepai@localhost")
+        .env("GIT_COMMITTER_NAME", "Klepai")
+        .env("GIT_COMMITTER_EMAIL", "klepai@localhost")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
