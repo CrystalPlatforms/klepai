@@ -28,7 +28,7 @@ import type {
   StoredSkill,
   StreamSegment,
 } from "@/types";
-import { AGENT_COMMANDS, isReasoningTitle } from "@/types";
+import { AGENT_COMMANDS, isReasoningTitle, naturalModeAvailable } from "@/types";
 import { CollisionPanel, type CollisionChoice } from "@/components/CollisionPanel";
 import type { CollisionBlocker } from "@/types";
 import { WorktreePanel, type WorktreeInfo } from "@/components/WorktreePanel";
@@ -1868,6 +1868,9 @@ export function ChatPane({
 
   const isStreaming = stream !== null;
   const isAgent = conversation.mode === "agent";
+  // Issue #42: CLI brains never see the Natural/Agent toggle — they are
+  // always agent-mode, so there is nothing to switch.
+  const naturalAvailable = naturalModeAvailable(conversation.agent_kind);
   const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
 
   return (
@@ -2449,20 +2452,22 @@ export function ChatPane({
                   <IconPaperclip className="h-4 w-4" />
                 </button>
               )}
-              <button
-                type="button"
-                disabled={isStreaming}
-                onClick={() => void toggleMode()}
-                title="Mode — Natural chats, Agent works in the project folder"
-                className={cn(
-                  "flex items-center rounded-md px-1.5 py-1 text-xs font-medium disabled:opacity-50",
-                  isAgent
-                    ? "text-yellow-500 hover:bg-yellow-500/10"
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                {isAgent ? "Agent" : "Natural"}
-              </button>
+              {naturalAvailable && (
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() => void toggleMode()}
+                  title="Mode — Natural chats, Agent works in the project folder"
+                  className={cn(
+                    "flex items-center rounded-md px-1.5 py-1 text-xs font-medium disabled:opacity-50",
+                    isAgent
+                      ? "text-yellow-500 hover:bg-yellow-500/10"
+                      : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                  )}
+                >
+                  {isAgent ? "Agent" : "Natural"}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={isStreaming}

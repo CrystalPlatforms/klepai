@@ -2,6 +2,14 @@
 
 export type AgentKind = "claude_code" | "codex";
 
+/** Issue #42: Natural mode is a server-brain mode — a CLI brain (Claude
+ * Code, Codex) has computer access even read-only, so the Natural option
+ * never appears for one. Both mode affordances (composer toolbar toggle,
+ * Details panel pills) hide off this rule. */
+export function naturalModeAvailable(agentKind: AgentKind | null): boolean {
+  return agentKind === null;
+}
+
 export interface Conversation {
   id: number;
   title: string;

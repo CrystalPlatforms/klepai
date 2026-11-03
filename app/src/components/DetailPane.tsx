@@ -4,6 +4,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { IconLayoutSidebarRightCollapse, IconLoader2 } from "@/components/ui/icons";
 
 import type { AppSettings, Conversation, Message, ModelInfo, Server } from "@/types";
+import { naturalModeAvailable } from "@/types";
 import {
   EXPORT_FORMATS,
   buildExportFile,
@@ -369,12 +370,16 @@ export function DetailPane({
         <div className="flex-1 space-y-3 overflow-y-auto p-4 text-xs">
           <Row label="Mode">
             <div className="flex items-center gap-1.5">
-              <ModePill
-                label="Natural"
-                active={conversation?.mode !== "agent"}
-                disabled={!conversation}
-                onClick={() => void switchMode("natural")}
-              />
+              {/* Issue #42: CLI brains never sit in Natural, so the pill
+                  disappears for them — Agent is the only mode there is. */}
+              {(!conversation || naturalModeAvailable(conversation.agent_kind)) && (
+                <ModePill
+                  label="Natural"
+                  active={conversation?.mode !== "agent"}
+                  disabled={!conversation}
+                  onClick={() => void switchMode("natural")}
+                />
+              )}
               <ModePill
                 label="Agent"
                 active={conversation?.mode === "agent"}

@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use klepai_lib::store::Store;
+use klepai_lib::store::{AgentKind, Store};
 
 /// Unique per-test temp dir; cleared before the run so leftovers never
 /// interfere.
@@ -241,6 +241,100 @@ fn conversation_model_pinning_round_trip() {
         .set_conversation_model(conversation.id, Some(999_999), Some("x"))
         .is_err());
     assert!(store.set_conversation_model(999_999, None, None).is_err());
+}
+
+// ---- Natural mode is server-brains-only (issue #42) ----------------------------
+//
+// Issue #42: even read-only Natural gives a CLI brain computer access (it
+// reads the whole home directory), so a conversation whose brain is Claude
+// Code or Codex must never sit in Natural mode. The store is the single
+// chokepoint both UI toggles go through.
+
+#[test]
+fn natural_mode_is_refused_for_cli_brains() {
+    let store = Store::open(&temp_db("natural-cli")).unwrap();
+
+    // An agent pick itself always lands in agent mode.
+    let conversation = store.create_conversation(None).unwrap();
+    store
+        .set_conversation_agent(conversation.id, Some(AgentKind::ClaudeCode), "/tmp/proj")
+        .unwrap();
+    assert_eq!(store.get_conversation(conversation.id).unwrap().mode, "agent");
+
+    // Switching that conversation back to Natural is refused…
+    let refused = store.set_conversation_mode(conversation.id, "natural");
+    assert!(refused.is_err(), "natural must be refused for a CLI brain");
+    // …and a refused switch leaves the mode untouched.
+    assert_eq!(
+        store.get_conversation(conversation.id).unwrap().mode,
+        "agent",
+        "a refused switch leaves the mode untouched"
+    );
+
+    // Same refusal with the other CLI brain.
+    store
+        .set_conversation_brain(conversation.id, Some(AgentKind::Codex))
+        .unwrap();
+    assert!(store
+        .set_conversation_mode(conversation.id, "natural")
+        .is_err());
+
+    // A server brain keeps both modes — Natural remains available there.
+    let plain = store.create_conversation(None).unwrap();
+    store.set_conversation_mode(plain.id, "agent").unwrap();
+    store.set_conversation_mode(plain.id, "natural").unwrap();
+    assert_eq!(store.get_conversation(plain.id).unwrap().mode, "natural");
+}
+
+#[test]
+fn switching_the_brain_to_a_cli_leaves_natural_mode() {
+    let store = Store::open(&temp_db("brain-flip")).unwrap();
+
+    // A server-brain conversation sitting in Natural mode…
+    let conversation = store.create_conversation(None).unwrap();
+    assert_eq!(store.get_conversation(conversation.id).unwrap().mode, "natural");
+
+    // …picking a CLI brain lands it in agent mode in the same write —
+    // no natural+CLI state ever exists (issue #42).
+    store
+        .set_conversation_brain(conversation.id, Some(AgentKind::ClaudeCode))
+        .unwrap();
+    let switched = store.get_conversation(conversation.id).unwrap();
+    assert_eq!(switched.agent_kind.as_deref(), Some("claude_code"));
+    assert_eq!(switched.mode, "agent");
+
+    // Back to a server brain: agent mode is simply kept — the user never
+    // asked to leave it.
+    store.set_conversation_brain(conversation.id, None).unwrap();
+    let back = store.get_conversation(conversation.id).unwrap();
+    assert_eq!(back.agent_kind, None);
+    assert_eq!(back.mode, "agent");
+}
+
+#[test]
+fn reopening_normalizes_legacy_natural_cli_rows() {
+    let db = temp_db("legacy-natural");
+    let store = Store::open(&db).unwrap();
+    let conversation = store.create_conversation(None).unwrap();
+    drop(store);
+
+    // Simulate a database from before issue #42: a CLI brain parked in
+    // Natural mode. Direct SQL — no store method produces this state.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE conversations SET agent_kind = 'codex', mode = 'natural' WHERE id = ?1",
+            [conversation.id],
+        )
+        .unwrap();
+    }
+
+    // Reopening (a launch) normalizes it to agent mode — the CLI brain
+    // never returns to Natural.
+    let reopened = Store::open(&db).unwrap();
+    let fixed = reopened.get_conversation(conversation.id).unwrap();
+    assert_eq!(fixed.agent_kind.as_deref(), Some("codex"));
+    assert_eq!(fixed.mode, "agent");
 }
 
 // ---- Auto-title ----------------------------------------------------------------

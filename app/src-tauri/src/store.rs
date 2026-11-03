@@ -17,6 +17,11 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("unknown server kind: {0}")]
     UnknownKind(String),
+    /// Issue #42: Natural mode chats through a server model only. A CLI
+    /// brain (Claude Code, Codex) touches the computer even read-only, so
+    /// it never sits in Natural mode.
+    #[error("natural mode is not available for CLI brains")]
+    NaturalUnavailable,
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -390,6 +395,14 @@ impl Store {
         if !message_columns.iter().any(|name| name == "skill_name") {
             conn.execute("ALTER TABLE messages ADD COLUMN skill_name TEXT", [])?;
         }
+        // Issue #42 normalization: databases from before the Natural-mode
+        // ban may hold a CLI brain parked in `natural`; every open moves
+        // those to `agent`. Idempotent — after the first run nothing matches.
+        conn.execute(
+            "UPDATE conversations SET mode = 'agent'
+             WHERE agent_kind IS NOT NULL AND mode = 'natural'",
+            [],
+        )?;
         Ok(())
     }
 
@@ -487,9 +500,25 @@ impl Store {
 
     /// Switches the conversation between `natural` (chat) and `agent` (a
     /// headless coding agent). Unknown modes are rejected before SQL.
+    /// Natural is a server-brain mode (issue #42): a CLI brain has computer
+    /// access even read-only, so the switch is refused when the
+    /// conversation's brain is Claude Code or Codex.
     pub fn set_conversation_mode(&self, id: i64, mode: &str) -> Result<()> {
         if mode != "natural" && mode != "agent" {
             return Err(StoreError::UnknownKind(mode.to_string()));
+        }
+        if mode == "natural" {
+            let agent_kind: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT agent_kind FROM conversations WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .map_err(StoreError::from)?;
+            if agent_kind.is_some() {
+                return Err(StoreError::NaturalUnavailable);
+            }
         }
         let changed = self.conn.execute(
             "UPDATE conversations SET mode = ?1 WHERE id = ?2",
@@ -528,12 +557,17 @@ impl Store {
     }
 
     /// Switches the conversation's brain between a server model (`None`) and
-    /// a headless CLI agent — without touching the mode. The server pin
+    /// a headless CLI agent. Picking a CLI flips the mode to `agent` in the
+    /// same write (issue #42) — a CLI brain never sits in Natural. Dropping
+    /// back to a server model keeps the mode as-is. The server pin
     /// (server_id/model_id) is never cleared: it simply becomes irrelevant
     /// while a CLI is the brain.
     pub fn set_conversation_brain(&self, id: i64, agent_kind: Option<AgentKind>) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE conversations SET agent_kind = ?1 WHERE id = ?2",
+            "UPDATE conversations
+             SET agent_kind = ?1,
+                 mode = CASE WHEN ?1 IS NOT NULL THEN 'agent' ELSE mode END
+             WHERE id = ?2",
             rusqlite::params![agent_kind.map(|kind| kind.as_str()), id],
         )?;
         if changed == 0 {
