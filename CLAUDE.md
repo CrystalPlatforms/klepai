@@ -7,6 +7,7 @@
 - Updater already exists: **Check for updates** in About (signature-verified GitHub Releases flow, `app/src/lib/updater.ts`). Until a signed release ships a `latest.json` asset, it reports "up to date" — expected pre-release state, not a bug.
 - The only "telemetry" is the **CounterAPI** anonymous launch counter (issue #31, `app/src/lib/analytics.ts`) — it stays as is.
 - Landing download buttons (`index.html`) point at **stable asset names** via `releases/latest/download/…`: `klepai-macos.dmg`, `klepai-windows.zip`, `klepai-linux.zip`. Every release must attach the macOS DMG also under the stable name `klepai-macos.dmg` (the Tauri-built name carries the version, e.g. `Klepai_0.0.1_aarch64.dmg`) — otherwise the landing macOS button breaks.
+- **Landing changelog (v0.1.6, `plans/v0.1.6.md`):** each release drafts its changelog entry + "Latest: vX" chip bump in the /release-product form; they ride the version-bump commit (static HTML in `index.html`, no GitHub API, no new JS). Deploy is manual — after every release remind about `wrangler pages deploy`. The changelog sits above the Roadmap on the landing; the roadmap keeps only future versions.
 
 ## Deferred decisions
 
