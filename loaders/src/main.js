@@ -1,5 +1,3 @@
-import "./style.css";
-
 const loaders = [
   "error",
   "planning",
