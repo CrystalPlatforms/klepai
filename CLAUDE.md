@@ -13,3 +13,7 @@
 
 - **Sentry (free tier)** — candidate for crash reporting in future public versions (consider opt-in). Noted here 2026-10-26 at the owner's request; not decided yet.
 - Product docs site — postponed (owner: "docs later"); landing `klepai.pages.dev` will be expanded instead.
+
+## Katalog treści WRITES (klepai)
+
+Content (content-update/content-launch) dla klepai zapisuje do `~/Documents/klepai/CrystalPlatforms-klepai/` (folder wewnątrz repo, gitignored; przeniesiony z `~/Documents/writes-content/` 2026-11-05). Katalog treści podawać ręcznie przy WRITES-ach — skrypt content-dir.sh wyprowadza slug z podwójnym myślnikiem z remote i nie znajduje historii (ten sam problem co w umux, 2026-10-27). Kanały i konwencje głosu prowadzi ledger `story.md` w tym katalogu.

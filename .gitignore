@@ -22,3 +22,6 @@ brag-output/
 
 # Cloudflare local cache (wrangler pages dev)
 .wrangler/
+
+# Content drafts (WRITES skills, local only)
+/CrystalPlatforms-klepai/
