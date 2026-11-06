@@ -7,3 +7,4 @@
 
 - On MacOS native TopBar icon 'Klep' and when you click there is a mini-window (like in umux)
 - On other, native 'Klep' icon and mini-window
+  (COMPLETED IN v1.0)
