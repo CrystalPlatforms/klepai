@@ -1,10 +1,18 @@
-//! Conversation control (issue #8): regenerate/edit store semantics and the
-//! per-conversation settings / model-switch request paths.
+//! Conversation control (issues #8/#43/#45): regenerate/variant store
+//! semantics and the per-conversation settings / model-switch request paths.
 //!
 //! Assumptions these tests encode:
-//! - Regenerate is "delete the last assistant message, then stream again":
-//!   with those store primitives, replace-not-append is the only possible
-//!   outcome, and history length is unchanged once the fresh reply lands.
+//! - Regenerate keeps the displaced answer as the anchor's variant 1 (the
+//!   first click files it, idempotently), and the fresh answer joins the
+//!   ring as the next variant — the anchor row mirrors the visible variant,
+//!   so the flat history path never changes shape and history length stays
+//!   unchanged once the fresh reply lands.
+//! - Each variant carries the model id resolved at generation time
+//!   (`resolve_target`, the same mapping the real pipeline uses).
+//! - A stopped generation keeps its non-empty partial answer as an aborted
+//!   variant; a zero-content abort keeps nothing at all.
+//! - Showing a variant moves exactly one visible marker and re-mirrors the
+//!   anchor row.
 //! - Editing a user message rewrites its content and drops every later
 //!   message in the path (id order is the path in the Alpha).
 //! - Per-conversation settings (system prompt, temperature, context length,
@@ -64,46 +72,172 @@ fn turns_from(store: &Store, conversation_id: i64) -> Vec<ChatTurn> {
         .collect()
 }
 
-// ---- Regenerate semantics ----------------------------------------------------
+// ---- Regenerate keeps variants (issues #43/#45) --------------------------------
+
+/// Drives the store primitives exactly the way the regenerate command does:
+/// file the displaced answer as variant 1, then land the fresh answer as
+/// the next variant. The model id is a literal here — its resolution is the
+/// model-capture test's subject, not the ring behavior's.
+fn regenerate_once(store: &Store, conversation_id: i64, new_answer: &str) {
+    let anchor = store
+        .last_message(conversation_id)
+        .unwrap()
+        .expect("regenerate needs an answer to displace");
+    assert_eq!(anchor.role, "assistant");
+    store.ensure_anchor_variant(&anchor, Some("resolved-model")).unwrap();
+    store
+        .append_variant(&anchor, new_answer, None, Some("resolved-model"), false)
+        .unwrap()
+        .expect("a complete answer always keeps");
+}
 
 #[test]
-fn regenerate_replaces_rather_than_appends_to_the_last_reply() {
-    let store = open("regen");
+fn regenerating_keeps_the_displaced_answer_as_the_visible_variant_ring() {
+    let store = open("regen-variants");
     let conv = store.create_conversation(None).unwrap();
     store.insert_message(conv.id, "user", "question").unwrap();
-    let weak_reply = store
-        .insert_message(conv.id, "assistant", "weak answer")
-        .unwrap();
+    store.insert_message(conv.id, "assistant", "weak answer").unwrap();
 
-    // The regenerate primitives: the last message is the assistant reply…
-    let last = store
-        .last_message(conv.id)
-        .unwrap()
-        .expect("history has a reply");
-    assert_eq!(last.id, weak_reply);
-    assert_eq!(last.role, "assistant");
-
-    // …it is removed (not appended to)…
-    store.delete_message(last.id).unwrap();
-    let history = store.list_messages(conv.id).unwrap();
-    assert_eq!(history.len(), 1, "only the user message remains");
-    assert_eq!(history[0].role, "user");
-    assert_eq!(history[0].content, "question");
-
-    // …and the fresh reply lands with the history length back where it was.
-    // (SQLite may reuse the deleted row's id — what matters is that exactly
-    // one reply exists and it is the new one.)
-    let replacement = store
-        .insert_message(conv.id, "assistant", "better answer")
-        .unwrap();
+    // First regenerate click: the displaced answer becomes variant 1, the
+    // fresh one variant 2 — history length stays where it was.
+    regenerate_once(&store, conv.id, "better answer");
     let history = store.list_messages(conv.id).unwrap();
     assert_eq!(history.len(), 2, "history length unchanged by regenerate");
-    assert_eq!(history[1].id, replacement);
     assert_eq!(history[1].content, "better answer");
-    assert!(
-        !history.iter().any(|m| m.content == "weak answer"),
-        "the weak answer is gone — replaced, not appended to"
-    );
+
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants.len(), 2, "displaced answer kept beside its retry");
+    assert_eq!(variants[0].ordinal, 1);
+    assert_eq!(variants[0].content, "weak answer");
+    assert_eq!(variants[1].ordinal, 2);
+    assert_eq!(variants[1].content, "better answer");
+    // Exactly one visible variant, and it is the fresh answer.
+    let visible: Vec<_> = variants.iter().filter(|v| v.visible).collect();
+    assert_eq!(visible.len(), 1, "exactly one visible variant per anchor");
+    assert_eq!(visible[0].content, "better answer");
+    // The context invariant: the anchor row mirrors the visible variant, so
+    // the flat history path serves exactly what the bubble displays.
+    assert_eq!(history[1].content, visible[0].content);
+
+    // A second regenerate appends — the first click's conversion is
+    // idempotent, the ring grows instead of re-filing variant 1.
+    regenerate_once(&store, conv.id, "best answer");
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants.len(), 3);
+    assert_eq!(variants[0].content, "weak answer");
+    assert_eq!(variants[2].content, "best answer");
+    let visible: Vec<_> = variants.iter().filter(|v| v.visible).collect();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].content, "best answer");
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+    assert_eq!(anchor.content, "best answer");
+}
+
+#[test]
+fn each_variant_carries_the_model_active_when_it_was_generated() {
+    let store = open("regen-model-capture");
+    let mock = MockServer::start(|_req| ollama_stream());
+    let conv = store.create_conversation(None).unwrap();
+    let server = store
+        .create_server("local", "ollama", mock.base_url(), None)
+        .unwrap();
+    store
+        .set_conversation_model(conv.id, Some(server.id), Some("llama3:8b"))
+        .unwrap();
+    store.insert_message(conv.id, "user", "question").unwrap();
+    store.insert_message(conv.id, "assistant", "weak answer").unwrap();
+
+    // The model id rides through resolve_target — the same mapping the real
+    // send pipeline uses — into both the kept original and the fresh answer.
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+    let (_, model, _) = resolve_target(&store, conv.id).unwrap();
+    assert_eq!(model, "llama3:8b");
+    store.ensure_anchor_variant(&anchor, Some(&model)).unwrap();
+    store
+        .set_conversation_model(conv.id, Some(server.id), Some("qwen2.5:7b"))
+        .unwrap();
+    let (_, switched, _) = resolve_target(&store, conv.id).unwrap();
+    assert_eq!(switched, "qwen2.5:7b");
+    store
+        .append_variant(&anchor, "better answer", None, Some(&switched), false)
+        .unwrap();
+
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants[0].model_id.as_deref(), Some("llama3:8b"));
+    assert_eq!(variants[1].model_id.as_deref(), Some("qwen2.5:7b"));
+}
+
+#[test]
+fn showing_a_variant_moves_the_visible_marker_and_remirrors_the_anchor() {
+    let store = open("regen-step");
+    let conv = store.create_conversation(None).unwrap();
+    store.insert_message(conv.id, "user", "question").unwrap();
+    store.insert_message(conv.id, "assistant", "answer one").unwrap();
+    regenerate_once(&store, conv.id, "answer two");
+    regenerate_once(&store, conv.id, "answer three");
+
+    // Step back to variant 1: the marker moves, the anchor row mirrors it,
+    // and the ring order stays stable.
+    let variants = store.list_variants(conv.id).unwrap();
+    store.show_variant(variants[0].id).unwrap();
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants[0].content, "answer one");
+    assert!(variants[0].visible);
+    assert!(!variants[1].visible && !variants[2].visible);
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+    assert_eq!(anchor.content, "answer one");
+    let history = store.list_messages(conv.id).unwrap();
+    assert_eq!(history[1].content, "answer one");
+}
+
+#[test]
+fn a_stopped_generation_keeps_its_partial_answer_as_an_aborted_variant() {
+    let store = open("regen-abort");
+    let conv = store.create_conversation(None).unwrap();
+    store.insert_message(conv.id, "user", "question").unwrap();
+    store.insert_message(conv.id, "assistant", "old answer").unwrap();
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+
+    // Stop mid-regeneration: the partial lands as evidence, marked aborted,
+    // and becomes the visible variant like any other.
+    store.ensure_anchor_variant(&anchor, Some("model-a")).unwrap();
+    store
+        .append_variant(&anchor, "partial ans", None, Some("model-b"), true)
+        .unwrap()
+        .expect("a non-empty abort is evidence, not garbage");
+
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants.len(), 2);
+    let aborted = variants.last().unwrap();
+    assert!(aborted.aborted);
+    assert!(!variants[0].aborted);
+    assert_eq!(aborted.content, "partial ans");
+    assert!(aborted.visible);
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+    assert_eq!(anchor.content, "partial ans");
+}
+
+#[test]
+fn a_zero_content_abort_keeps_no_variant_row() {
+    let store = open("regen-abort-empty");
+    let conv = store.create_conversation(None).unwrap();
+    store.insert_message(conv.id, "user", "question").unwrap();
+    store.insert_message(conv.id, "assistant", "old answer").unwrap();
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+    store.ensure_anchor_variant(&anchor, Some("model-a")).unwrap();
+
+    // Stop before anything streamed: nothing worth keeping exists — no
+    // variant row, ring and anchor exactly as they were.
+    let kept = store
+        .append_variant(&anchor, "", None, Some("model-b"), true)
+        .unwrap();
+    assert!(kept.is_none(), "a zero-content abort creates no variant");
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants.len(), 1);
+    assert!(variants[0].visible);
+    assert_eq!(variants[0].content, "old answer");
+    let anchor = store.last_message(conv.id).unwrap().unwrap();
+    assert_eq!(anchor.content, "old answer");
 }
 
 // ---- Edit semantics ----------------------------------------------------------

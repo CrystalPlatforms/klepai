@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatPane } from "@/components/ChatPane";
 import { DetailPane } from "@/components/DetailPane";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { trackAppOpen } from "@/lib/analytics";
 
 /** A pending "open this conversation scrolled to this message" request. */
@@ -174,6 +175,9 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         onServersChanged={() => void refresh()}
       />
+      {/* Update-available banner (issue #44): one quiet check at app start;
+          quiet and error verdicts render nothing. */}
+      <UpdateBanner />
     </div>
   );
 }

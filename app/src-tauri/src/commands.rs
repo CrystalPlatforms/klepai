@@ -1143,7 +1143,7 @@ pub async fn send_message(
         let _ = channel.send(ChatStreamEvent::TitleChanged { title });
     }
 
-    stream_reply(&state, conversation_id, skill_id, &channel).await
+    stream_reply(&state, conversation_id, skill_id, None, &channel).await
 }
 
 /// Streams an assistant reply for the conversation's history as stored and
@@ -1151,31 +1151,47 @@ pub async fn send_message(
 /// "history as stored → one streamed assistant message appended", so control
 /// actions reuse the exact same send/stream path. Only an explicit send can
 /// carry a one-shot skill; control actions inject the enabled set alone.
+///
+/// `anchor` is set by regenerate (issues #43/#45): the reply then joins the
+/// anchor's variant ring instead of appending a new row, and the anchor
+/// mirrors the visible variant — while the request itself still streams from
+/// the same context the original send had (the anchor's own previous answer
+/// is excluded from the turns).
 async fn stream_reply(
     state: &State<'_, AppState>,
     conversation_id: i64,
     skill_id: Option<i64>,
+    anchor: Option<&Message>,
     channel: &Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
     // 1. Resolve the target from the (already persisted) state, then merge
-    //    the skills block into the system prompt.
+    //    the skills block into the system prompt. A regenerate click also
+    //    files the displaced answer as variant 1 here — before anything can
+    //    fail, so the old answer is never lost.
     let (endpoint, model, options) = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         let (endpoint, model, mut options) =
             resolve_target(&guard, conversation_id).map_err(|e| e.to_string())?;
         apply_skill_injection(&guard, &state.skills, &mut options, skill_id)
             .map_err(|e| e.to_string())?;
+        if let Some(anchor) = anchor {
+            guard
+                .ensure_anchor_variant(anchor, Some(&model))
+                .map_err(|e| e.to_string())?;
+        }
         (endpoint, model, options)
     };
 
-    // 2. Build the request context from full history.
+    // 2. Build the request context from full history. The anchor's own
+    //    previous answer stays out — a regeneration retries from the same
+    //    turns the original send had.
     let turns: Vec<ChatTurn> = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         guard
             .list_messages(conversation_id)
             .map_err(|e| e.to_string())?
             .into_iter()
-            .filter(|m| m.role != "tool")
+            .filter(|m| m.role != "tool" && anchor.map_or(true, |a| m.id != a.id))
             .map(|m| ChatTurn {
                 role: m.role,
                 content: m.content,
@@ -1218,8 +1234,12 @@ async fn stream_reply(
         .map_err(|_| "generation lock poisoned")?
         .remove(&generation_id);
 
-    // 4. Persist the assistant message — full or partial, abort or error —
-    //    so the thread never loses what the user already saw.
+    // 4. Persist the answer. A send/edit appends a new row as before; a
+    //    regeneration appends to the anchor's variant ring and mirrors the
+    //    visible variant into the anchor row instead (issues #43/#45). The
+    //    resolved model id rides along so every variant carries its label.
+    //    A pre-stream gateway error never reaches this point — the anchor
+    //    keeps its previous answer as the visible variant, nothing is lost.
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -1230,28 +1250,54 @@ async fn stream_reply(
         }
     };
 
-    let message = {
+    let message_id = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         let thinking = if outcome.thinking.is_empty() {
             None
         } else {
             Some(outcome.thinking.as_str())
         };
-        guard
-            .insert_message_full(
-                conversation_id,
-                "assistant",
-                &outcome.content,
-                thinking,
-                &[],
-                None,
-            )
-            .map_err(|e| e.to_string())?
+        match anchor {
+            Some(anchor_message) => {
+                // A zero-content abort keeps nothing: the ring and the
+                // anchor stay exactly as they were.
+                guard
+                    .append_variant(
+                        anchor_message,
+                        &outcome.content,
+                        thinking,
+                        Some(&model),
+                        outcome.aborted,
+                    )
+                    .map_err(|e| e.to_string())?;
+                anchor_message.id
+            }
+            None => {
+                let message = guard
+                    .insert_message_full(
+                        conversation_id,
+                        "assistant",
+                        &outcome.content,
+                        thinking,
+                        &[],
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+                // A stopped first attempt is evidence too (issue #45): the
+                // partial content lands as the anchor's first variant.
+                if outcome.aborted {
+                    guard
+                        .append_variant(&message, &outcome.content, thinking, Some(&model), true)
+                        .map_err(|e| e.to_string())?;
+                }
+                message.id
+            }
+        }
     };
 
     let _ = channel.send(ChatStreamEvent::Done {
-        message_id: message.id,
-        content: message.content.clone(),
+        message_id,
+        content: outcome.content.clone(),
         thinking: outcome.thinking.clone(),
         aborted: outcome.aborted,
     });
@@ -2022,10 +2068,11 @@ fn tool_block_titles(call: &crate::gateway::ToolCall) -> (String, String, String
         ),
     }
 }
-/// Regenerates the reply. When the history ends with an assistant message it
-/// is removed first — replaced, never appended to — and a fresh one is
-/// streamed for the same history. When it ends with a user message (a send
-/// that failed before any reply arrived) nothing is removed and the reply is
+/// Regenerates the reply. When the history ends with an assistant message
+/// that answer becomes the anchor's first variant (issue #43) — kept, not
+/// deleted — and the fresh answer joins it as the next variant once it
+/// lands. When the history ends with a user message (a send that failed
+/// before any reply arrived) there is nothing to keep and the reply is
 /// simply attempted again — which is also what the UI's Retry button does.
 #[tauri::command]
 pub async fn regenerate(
@@ -2033,18 +2080,35 @@ pub async fn regenerate(
     conversation_id: i64,
     channel: Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
-    {
+    let anchor = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
-        if let Some(last) = guard.last_message(conversation_id).map_err(|e| e.to_string())? {
-            if last.role == "assistant" {
-                guard.delete_message(last.id).map_err(|e| e.to_string())?;
-                let messages = guard.list_messages(conversation_id).map_err(|e| e.to_string())?;
-                let _ = channel.send(ChatStreamEvent::History { messages });
-            }
-        }
+        let anchor = match guard.last_message(conversation_id).map_err(|e| e.to_string())? {
+            Some(last) if last.role == "assistant" => Some(last),
+            _ => None,
+        };
         guard.touch_conversation(conversation_id).map_err(|e| e.to_string())?;
-    }
-    stream_reply(&state, conversation_id, None, &channel).await
+        anchor
+    };
+    stream_reply(&state, conversation_id, None, anchor.as_ref(), &channel).await
+}
+
+/// Variants of the conversation's last assistant answer (issue #43) — the
+/// ring the bubble navigates. Empty until the first regenerate click or a
+/// mid-run stop (issue #45) gives the answer a second kept attempt.
+#[tauri::command]
+pub fn list_variants(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+) -> CmdResult<Vec<crate::store::MessageVariant>> {
+    with_store(&state, |store| store.list_variants(conversation_id))
+}
+
+/// Shows one variant of the last answer (issue #43): flips the visible
+/// marker and mirrors its content into the anchor row, so the next send's
+/// flat history carries exactly what the user is looking at.
+#[tauri::command]
+pub fn show_variant(state: State<'_, AppState>, variant_id: i64) -> CmdResult<()> {
+    with_store(&state, |store| store.show_variant(variant_id))
 }
 
 /// Edits one of the user's own messages: rewrites its content, drops every
@@ -2081,7 +2145,7 @@ pub async fn edit_message(
         let messages = guard.list_messages(conversation_id).map_err(|e| e.to_string())?;
         let _ = channel.send(ChatStreamEvent::History { messages });
     }
-    stream_reply(&state, conversation_id, None, &channel).await
+    stream_reply(&state, conversation_id, None, None, &channel).await
 }
 
 /// Persists the per-conversation chat settings. An empty system prompt means

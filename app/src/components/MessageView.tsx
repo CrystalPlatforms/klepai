@@ -1,6 +1,6 @@
-import { IconArrowBackUp, IconCopy, IconPencil, IconRefresh, IconScissors, IconTrash, IconX } from "@/components/ui/icons";
+import { IconArrowBackUp, IconChevronLeft, IconChevronRight, IconCopy, IconPencil, IconRefresh, IconScissors, IconTrash, IconX } from "@/components/ui/icons";
 
-import type { Message } from "@/types";
+import type { Message, MessageVariant } from "@/types";
 import { isReasoningTitle, parseActivity } from "@/types";
 import { MarkdownMessage, ThinkingBlock } from "@/components/Markdown";
 import { ActivityBlock } from "@/components/ActivityBlock";
@@ -21,6 +21,12 @@ interface MessageViewProps {
   /** Regenerate affordance — the last assistant message only. */
   showRegenerate?: boolean;
   onRegenerate?: () => void;
+  /** Variant ring of the last assistant answer (issues #43/#45): kept
+   * answers navigable with `<` `>`. Rendered on the newest assistant
+   * bubble only; absent for messages without kept variants. */
+  variants?: MessageVariant[];
+  /** Steps the ring by one position — clamped at the ends by the caller. */
+  onStepVariant?: (delta: 1 | -1) => void;
   /** Edit affordance — the user's own messages. */
   onEdit?: () => void;
   onReply?: () => void;
@@ -39,6 +45,8 @@ export function MessageView({
   highlighted = false,
   showRegenerate = false,
   onRegenerate,
+  variants,
+  onStepVariant,
   onEdit,
   onReply,
   onDelete,
@@ -68,6 +76,65 @@ export function MessageView({
           >
             <IconRefresh className="h-3.5 w-3.5" />
           </button>
+        )}
+      </div>
+    );
+
+  // The variant ring readout (issues #43/#45): position readout with `<` `>`
+  // when there is something to step, the shown variant's model label, and
+  // the "aborted" marker on stopped attempts. The row renders whenever the
+  // answer keeps variants — even a single one — so an aborted first attempt
+  // still shows its evidence.
+  const shownVariant = variants?.find((variant) => variant.visible) ?? null;
+  const variantCount = variants?.length ?? 0;
+  const stepClass =
+    "rounded-md p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
+  const variantRow =
+    message.role !== "assistant" || shownVariant == null ? null : (
+      <div
+        data-testid="variant-nav"
+        className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground"
+      >
+        <span data-testid="variant-readout" className="font-mono">
+          {shownVariant.ordinal}/{variantCount}
+        </span>
+        {variantCount > 1 && onStepVariant && (
+          <>
+            <button
+              type="button"
+              onClick={() => onStepVariant(-1)}
+              disabled={shownVariant.ordinal <= 1}
+              aria-label="Previous variant"
+              title="Previous variant"
+              className={stepClass}
+            >
+              <IconChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onStepVariant(1)}
+              disabled={shownVariant.ordinal >= variantCount}
+              aria-label="Next variant"
+              title="Next variant"
+              className={stepClass}
+            >
+              <IconChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </>
+        )}
+        {shownVariant.model_id && (
+          <span data-testid="variant-model" className="font-mono" title="Model that produced this answer">
+            {shownVariant.model_id}
+          </span>
+        )}
+        {shownVariant.aborted && (
+          <span
+            data-testid="variant-aborted"
+            title="This attempt was stopped before finishing"
+            className="rounded-[4px] border border-amber-500/40 bg-amber-500/10 px-1 py-px font-mono text-amber-600 dark:text-amber-500"
+          >
+            aborted
+          </span>
         )}
       </div>
     );
@@ -159,6 +226,7 @@ export function MessageView({
         <div className="max-w-[85%] min-w-0 has-[[data-klepai-table]]:max-w-full">
           {message.thinking && <ThinkingBlock thinking={message.thinking} />}
           <MarkdownMessage content={message.content} />
+          {variantRow}
           {message.images.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
               {message.images.map((image, index) => (

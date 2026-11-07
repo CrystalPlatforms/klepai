@@ -167,6 +167,25 @@ pub struct Message {
     pub created_at: i64,
 }
 
+/// One kept answer of the conversation's last assistant message (issues
+/// #43/#45): regenerating — or stopping mid-generation — files the displaced
+/// answer here instead of deleting it. `ordinal` orders the ring, `visible`
+/// marks the shown one (exactly one per anchor), `aborted` keeps a stopped
+/// attempt as evidence, and `model_id` records the model that produced it.
+/// The anchor row's content always mirrors the visible variant, so history
+/// assembly stays a flat path (issue #43's context invariant).
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageVariant {
+    pub id: i64,
+    pub message_id: i64,
+    pub content: String,
+    pub thinking: Option<String>,
+    pub model_id: Option<String>,
+    pub aborted: bool,
+    pub ordinal: i64,
+    pub visible: bool,
+}
+
 /// App-level defaults (single row, id = 1).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Settings {
@@ -237,6 +256,8 @@ const MESSAGE_COLUMNS: &str =
 const SKILL_COLUMNS: &str =
     "id, name, description, kind, enabled, path, size_bytes, created_at";
 const ALLOWED_RULE_COLUMNS: &str = "id, conversation_id, kind, pattern, created_at";
+const MESSAGE_VARIANT_COLUMNS: &str =
+    "id, message_id, content, thinking, model_id, aborted, ordinal, visible";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -275,6 +296,21 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+-- Kept answers of the last assistant message (issues #43/#45): the anchor
+-- row lives in `messages`; regeneration and mid-run stops append here
+-- instead of destroying what the user already read. Exactly one variant per
+-- anchor is visible, and the anchor row mirrors it (see `mirror_anchor`).
+CREATE TABLE IF NOT EXISTS message_variants (
+    id         INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    content    TEXT NOT NULL,
+    thinking   TEXT,
+    model_id   TEXT,
+    aborted    INTEGER NOT NULL DEFAULT 0,
+    ordinal    INTEGER NOT NULL,
+    visible    INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     id                    INTEGER PRIMARY KEY CHECK (id = 1),
     default_server_id     INTEGER REFERENCES servers(id) ON DELETE SET NULL,
@@ -302,6 +338,7 @@ CREATE TABLE IF NOT EXISTS allowed_rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_message_variants_message ON message_variants(message_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
 CREATE INDEX IF NOT EXISTS idx_allowed_rules_conversation ON allowed_rules(conversation_id);
 
@@ -937,6 +974,120 @@ impl Store {
         Ok(changed)
     }
 
+    // ---- Message variants (issues #43/#45) --------------------------------
+
+    /// Variants of the conversation's last assistant message (the only
+    /// anchor the UI navigates), oldest first. Empty when that answer has
+    /// no variants yet — a plain send keeps none until the first
+    /// regenerate click or a mid-run stop.
+    pub fn list_variants(&self, conversation_id: i64) -> Result<Vec<MessageVariant>> {
+        let anchor_id = self
+            .conn
+            .query_row(
+                "SELECT id FROM messages
+                 WHERE conversation_id = ?1 AND role = 'assistant'
+                 ORDER BY id DESC LIMIT 1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(StoreError::from(other)),
+            })?;
+        match anchor_id {
+            Some(id) => variants_of(&self.conn, id),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Appends one variant to the anchor's ring and makes it the visible
+    /// one, mirroring its content into the anchor row (issue #43's context
+    /// invariant). A zero-content abort (issue #45) keeps nothing — nothing
+    /// worth reading arrived — so it writes no row and returns Ok(None).
+    pub fn append_variant(
+        &self,
+        anchor: &Message,
+        content: &str,
+        thinking: Option<&str>,
+        model_id: Option<&str>,
+        aborted: bool,
+    ) -> Result<Option<MessageVariant>> {
+        if aborted && content.is_empty() {
+            return Ok(None);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let next = next_ordinal(&tx, anchor.id)?;
+        // Exactly one visible variant per anchor: the one just appended.
+        tx.execute(
+            "UPDATE message_variants SET visible = 0 WHERE message_id = ?1",
+            [anchor.id],
+        )?;
+        tx.execute(
+            "INSERT INTO message_variants (message_id, content, thinking, model_id, aborted, ordinal, visible)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            rusqlite::params![anchor.id, content, thinking, model_id, aborted, next],
+        )?;
+        let id = tx.last_insert_rowid();
+        mirror_anchor(&tx, anchor.id)?;
+        tx.commit()?;
+        let variant = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {MESSAGE_VARIANT_COLUMNS} FROM message_variants WHERE id = ?1"
+                ),
+                [id],
+                row_to_variant,
+            )
+            .map_err(StoreError::from)?;
+        Ok(Some(variant))
+    }
+
+    /// Turns the anchor's current content into variant 1 on the first
+    /// regenerate click (idempotent — a ring that already exists is left
+    /// alone; an empty anchor keeps nothing). `model_id` is the best-known
+    /// producer: the model resolved at regenerate time, since answers from
+    /// before the variant capture carry no model stamp.
+    pub fn ensure_anchor_variant(&self, anchor: &Message, model_id: Option<&str>) -> Result<()> {
+        if anchor.content.is_empty() {
+            return Ok(());
+        }
+        if !variants_of(&self.conn, anchor.id)?.is_empty() {
+            return Ok(());
+        }
+        self.append_variant(
+            anchor,
+            &anchor.content,
+            anchor.thinking.as_deref(),
+            model_id,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// Shows one variant: flips the visible marker across its anchor's ring
+    /// and mirrors the shown variant into the anchor row, so the flat
+    /// history path keeps serving exactly what the bubble displays.
+    pub fn show_variant(&self, variant_id: i64) -> Result<()> {
+        let message_id: i64 = self
+            .conn
+            .query_row(
+                "SELECT message_id FROM message_variants WHERE id = ?1",
+                [variant_id],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE message_variants SET visible = (id = ?1) WHERE message_id = ?2",
+            rusqlite::params![variant_id, message_id],
+        )?;
+        mirror_anchor(&tx, message_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Forks the conversation at `from_message_id`: that message and
     /// everything after it are copied into a brand-new conversation; nothing
     /// before is cloned and the original is left byte-identical. The fork
@@ -1155,6 +1306,57 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         skill_name: row.get(6)?,
         created_at: row.get(7)?,
     })
+}
+
+fn row_to_variant(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageVariant> {
+    Ok(MessageVariant {
+        id: row.get(0)?,
+        message_id: row.get(1)?,
+        content: row.get(2)?,
+        thinking: row.get(3)?,
+        model_id: row.get(4)?,
+        aborted: row.get(5)?,
+        ordinal: row.get(6)?,
+        visible: row.get(7)?,
+    })
+}
+
+/// Variants of one message, oldest first. Takes a connection so both the
+/// store and its transactions (unchecked_transaction derefs to Connection)
+/// can read the ring.
+fn variants_of(conn: &Connection, message_id: i64) -> Result<Vec<MessageVariant>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_VARIANT_COLUMNS} FROM message_variants
+         WHERE message_id = ?1 ORDER BY ordinal"
+    ))?;
+    let rows = stmt.query_map([message_id], row_to_variant)?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
+}
+
+/// The ordinal the next variant of this anchor gets: one past the current
+/// maximum, so the ring keeps append order.
+fn next_ordinal(conn: &Connection, message_id: i64) -> Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM message_variants WHERE message_id = ?1",
+        [message_id],
+        |row| row.get(0),
+    )
+    .map_err(StoreError::from)
+}
+
+/// The anchor row mirrors its visible variant — a plain `list_messages`
+/// keeps serving exactly the displayed answer with zero new logic (issue
+/// #43's context invariant). The FTS index follows by trigger.
+fn mirror_anchor(conn: &Connection, message_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET
+             content  = (SELECT content  FROM message_variants WHERE message_id = ?1 AND visible = 1),
+             thinking = (SELECT thinking FROM message_variants WHERE message_id = ?1 AND visible = 1)
+         WHERE id = ?1",
+        [message_id],
+    )?;
+    Ok(())
 }
 
 /// Derives a conversation title from the first user message: the first

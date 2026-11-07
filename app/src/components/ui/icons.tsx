@@ -35,6 +35,7 @@ import {
   IconArrowsSort as TablerArrowsSort,
   IconCheck as TablerCheck,
   IconChevronDown as TablerChevronDown,
+  IconChevronLeft as TablerChevronLeft,
   IconChevronRight as TablerChevronRight,
   IconCircle as TablerCircle,
   IconCircleCheck as TablerCircleCheck,
@@ -91,6 +92,7 @@ export const IconArrowUp = tabler(TablerArrowUp);
 export const IconArrowsSort = tabler(TablerArrowsSort);
 export const IconCheck = tabler(TablerCheck);
 export const IconChevronDown = tabler(TablerChevronDown);
+export const IconChevronLeft = tabler(TablerChevronLeft);
 export const IconChevronRight = tabler(TablerChevronRight);
 export const IconCircle = tabler(TablerCircle);
 export const IconCircleCheck = tabler(TablerCircleCheck);

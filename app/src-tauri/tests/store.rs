@@ -43,6 +43,7 @@ fn first_launch_creates_schema_with_entity_tables_and_fts5() {
         "conversations",
         "messages",
         "settings",
+        "message_variants", // kept answers of the last reply (issues #43/#45)
         "messages_fts", // FTS5 virtual table created successfully
     ] {
         assert!(
@@ -138,6 +139,61 @@ fn data_survives_a_simulated_restart() {
 
     let ids = store.message_ids(listed[0].id).unwrap();
     assert_eq!(ids.len(), 1, "messages must survive a restart too");
+}
+
+/// Issues #43/#45: variants, their ordinals and the visible marker are
+/// ordinary rows — a quit and reopen must hand the bubble back exactly the
+/// ring the user left, shown variant included.
+#[test]
+fn variants_and_the_visible_marker_survive_a_restart() {
+    let db = temp_db("variant-restart");
+
+    // "First app run": generate, regenerate twice, step back to variant 1.
+    let conversation_id;
+    let variant_ids;
+    {
+        let store = Store::open(&db).unwrap();
+        let conversation = store.create_conversation(None).unwrap();
+        conversation_id = conversation.id;
+        store.insert_message(conversation.id, "user", "question").unwrap();
+        store
+            .insert_message(conversation.id, "assistant", "answer one")
+            .unwrap();
+        let anchor = store.last_message(conversation.id).unwrap().unwrap();
+        store.ensure_anchor_variant(&anchor, Some("model-a")).unwrap();
+        store
+            .append_variant(&anchor, "answer two", None, Some("model-b"), false)
+            .unwrap();
+        store
+            .append_variant(&anchor, "answer three", None, Some("model-b"), false)
+            .unwrap();
+        let variants = store.list_variants(conversation.id).unwrap();
+        store.show_variant(variants[0].id).unwrap();
+        variant_ids = store
+            .list_variants(conversation.id)
+            .unwrap()
+            .iter()
+            .map(|v| v.id)
+            .collect::<Vec<i64>>();
+    } // Store closed here — like quitting the app.
+
+    // "Second app run": the ring, its order and the shown variant are back.
+    let store = Store::open(&db).unwrap();
+    let variants = store.list_variants(conversation_id).unwrap();
+    assert_eq!(variants.len(), 3, "the whole ring survives the restart");
+    let ids: Vec<i64> = variants.iter().map(|v| v.id).collect();
+    assert_eq!(ids, variant_ids, "same rows, same order");
+    assert_eq!(variants[0].content, "answer one");
+    assert_eq!(variants[1].content, "answer two");
+    assert_eq!(variants[2].content, "answer three");
+    assert_eq!(variants[0].model_id.as_deref(), Some("model-a"));
+    assert_eq!(variants[2].model_id.as_deref(), Some("model-b"));
+    let visible: Vec<_> = variants.iter().filter(|v| v.visible).collect();
+    assert_eq!(visible.len(), 1, "exactly one shown variant survives");
+    assert_eq!(visible[0].id, variant_ids[0]);
+    // The anchor still mirrors what was on screen at quit time.
+    let anchor = store.last_message(conversation_id).unwrap().unwrap();
+    assert_eq!(anchor.content, "answer one");
 }
 
 // ---- Servers ----------------------------------------------------------------

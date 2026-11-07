@@ -22,6 +22,7 @@ import type {
   CollisionCheck,
   Conversation,
   Message,
+  MessageVariant,
   ModelInfo,
   Server,
   SkillInfo,
@@ -471,6 +472,10 @@ export function ChatPane({
   onErrorChanged,
 }: ChatPaneProps) {
   const [messages, setMessages] = useState<Message[]>([]);
+  /** Variant ring of the newest assistant answer (issues #43/#45) — the
+   * bubble navigates it with `<` `>`; empty until the answer keeps a
+   * second attempt. */
+  const [variants, setVariants] = useState<MessageVariant[]>([]);
   const [draft, setDraft] = useState("");
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [stream, setStream] = useState<StreamState | null>(null);
@@ -715,6 +720,7 @@ export function ChatPane({
     displayedIdRef.current = conversation?.id ?? null;
     stickToBottomRef.current = true;
     setMessages([]);
+    setVariants([]);
     setStream(null);
     setError(null);
     setPendingImages([]);
@@ -752,6 +758,11 @@ export function ChatPane({
         if (!cancelled) setMessages(loaded);
       })
       .catch((err) => console.error("Failed to load messages:", err));
+    invoke<MessageVariant[]>("list_variants", { conversationId: conversation.id })
+      .then((loaded) => {
+        if (!cancelled) setVariants(loaded);
+      })
+      .catch((err) => console.error("Failed to load variants:", err));
     return () => {
       cancelled = true;
     };
@@ -779,6 +790,38 @@ export function ChatPane({
       console.error("Failed to reload messages:", err);
     }
   }, []);
+
+  /** Re-reads the variant ring of the newest assistant answer (issues
+   * #43/#45) — after a generation ends or a step lands in the store. */
+  const reloadVariants = useCallback(async (conversationId: number) => {
+    try {
+      setVariants(await invoke<MessageVariant[]>("list_variants", { conversationId }));
+    } catch (err) {
+      console.error("Failed to reload variants:", err);
+    }
+  }, []);
+
+  /** Steps the variant ring by one position (issue #43): the store flips
+   * the visible marker and mirrors the shown variant into the anchor row,
+   * then the thread and the ring reload — content, readout and marker move
+   * together. The ends hold: stepping past them does nothing. */
+  const stepVariant = useCallback(
+    (delta: 1 | -1) => {
+      const id = displayedIdRef.current;
+      if (id === null) return;
+      const shown = variants.find((variant) => variant.visible);
+      if (!shown) return;
+      const target = variants.find((variant) => variant.ordinal === shown.ordinal + delta);
+      if (!target) return;
+      invoke("show_variant", { variantId: target.id })
+        .then(() => {
+          void reloadMessages(id);
+          void reloadVariants(id);
+        })
+        .catch((err) => console.error("Failed to switch variant:", err));
+    },
+    [variants, reloadMessages, reloadVariants],
+  );
 
   /** Stops the DISPLAYED conversation's generation — background ones keep
    * running until their own chat is reopened and stopped there. */
@@ -958,9 +1001,8 @@ export function ChatPane({
             live.generationId = null;
             live.permission = null;
             if (displayedIdRef.current === conversationId) {
-              setMessages((current) => [
-                ...current,
-                {
+              setMessages((current) => {
+                const landed: Message = {
                   id: event.message_id,
                   conversation_id: conversationId,
                   role: "assistant",
@@ -969,11 +1011,26 @@ export function ChatPane({
                   images: [],
                   skill_name: null,
                   created_at: Math.floor(Date.now() / 1000),
-                },
-              ]);
+                };
+                // A regenerate lands on the anchor row (same id): update in
+                // place instead of appending. A zero-content abort on a
+                // regenerate keeps nothing — the old answer stays on screen
+                // exactly as the store keeps it (issue #45).
+                const anchorIndex = current.findIndex((m) => m.id === event.message_id);
+                if (anchorIndex >= 0) {
+                  if (event.aborted && event.content.length === 0) return current;
+                  const next = [...current];
+                  next[anchorIndex] = landed;
+                  return next;
+                }
+                return [...current, landed];
+              });
               setStream(null);
               setPermission(null);
               setStreamTodos(null);
+              // The ring may have grown (a kept regenerate or a stopped
+              // attempt) — re-read it for the navigation row.
+              void reloadVariants(conversationId);
             }
             // The user's queued messages (issue #22) go out once the
             // generation finished naturally — never mid-work, never after
@@ -1872,6 +1929,15 @@ export function ChatPane({
   // always agent-mode, so there is nothing to switch.
   const naturalAvailable = naturalModeAvailable(conversation.agent_kind);
   const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
+  // The variant ring (issues #43/#45) rides the newest assistant answer —
+  // server chat only, and never on older bubbles.
+  const lastAssistantId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return messages[i].id;
+    }
+    return null;
+  })();
+  const variantsAvailable = !isAgent && !isCliBrain;
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
@@ -1966,6 +2032,20 @@ export function ChatPane({
                   message.id === lastMessageId
                 }
                 onRegenerate={regenerate}
+                variants={
+                  variantsAvailable &&
+                  message.role === "assistant" &&
+                  message.id === lastAssistantId
+                    ? variants
+                    : undefined
+                }
+                onStepVariant={
+                  variantsAvailable &&
+                  message.role === "assistant" &&
+                  message.id === lastAssistantId
+                    ? stepVariant
+                    : undefined
+                }
                 onEdit={
                   !isAgent && !isCliBrain && message.role === "user"
                     ? () => startEdit(message)

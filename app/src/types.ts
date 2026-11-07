@@ -52,6 +52,21 @@ export interface Message {
   created_at: number;
 }
 
+/** One kept answer of the conversation's last assistant message (issues
+ * #43/#45): regenerating or stopping mid-run files the displaced answer
+ * here. `visible` marks the shown one; the message row's content always
+ * mirrors it. Mirrors the Rust `store::MessageVariant` struct. */
+export interface MessageVariant {
+  id: number;
+  message_id: number;
+  content: string;
+  thinking: string | null;
+  model_id: string | null;
+  aborted: boolean;
+  ordinal: number;
+  visible: boolean;
+}
+
 export interface AppSettings {
   default_server_id: number | null;
   default_model_id: string | null;

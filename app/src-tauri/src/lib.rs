@@ -104,6 +104,8 @@ pub fn run() {
             commands::send_message,
             commands::send_agent_message,
             commands::regenerate,
+            commands::list_variants,
+            commands::show_variant,
             commands::edit_message,
             commands::stop_generation,
             commands::delete_message,
