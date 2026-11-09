@@ -880,8 +880,12 @@ export function ChatPane({
         switch (event.type) {
           case "user_message":
             // A background conversation's thread reloads from the store on
-            // switch — only the on-screen one needs the live append.
+            // switch — only the on-screen one needs the live append. The
+            // follow-up also retires the previous answer's variant row
+            // (issue #46): the store pruned it at send time, and the older
+            // bubble drops its navigation the moment a new message exists.
             if (displayedIdRef.current === conversationId) {
+              setVariants([]);
               setMessages((current) => [
                 ...current,
                 {
@@ -2044,6 +2048,13 @@ export function ChatPane({
                   message.role === "assistant" &&
                   message.id === lastAssistantId
                     ? stepVariant
+                    : undefined
+                }
+                variantsLocked={
+                  variantsAvailable &&
+                  message.role === "assistant" &&
+                  message.id === lastAssistantId
+                    ? isStreaming
                     : undefined
                 }
                 onEdit={

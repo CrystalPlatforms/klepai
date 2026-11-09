@@ -11,6 +11,8 @@
 //!   is set exactly once and never overrides a manual rename.
 //! - "Restart" is simulated by dropping the `Store` and reopening the same
 //!   file — the app process itself is not spawned.
+//! - The variant ring caps at ten (issue #47): the oldest attempt falls off
+//!   FIFO, ordinals stay contiguous, aborted attempts count toward the cap.
 //!
 //! Not covered in this iteration: FTS5 *query* behavior (search ships in a
 //! later phase; here we only assert the virtual table exists), concurrency
@@ -194,6 +196,53 @@ fn variants_and_the_visible_marker_survive_a_restart() {
     // The anchor still mirrors what was on screen at quit time.
     let anchor = store.last_message(conversation_id).unwrap().unwrap();
     assert_eq!(anchor.content, "answer one");
+}
+
+/// Issues #47: the ring caps at ten — creating the next variant beyond the
+/// cap drops the oldest, ordinals stay contiguous 1..10 (the readout never
+/// exceeds "/10"), and an aborted attempt counts toward the cap like any
+/// other kept answer.
+#[test]
+fn the_variant_ring_caps_at_ten_and_drops_the_oldest() {
+    let db = temp_db("variant-fifo-cap");
+    let store = Store::open(&db).unwrap();
+    let conversation = store.create_conversation(None).unwrap();
+    store.insert_message(conversation.id, "user", "question").unwrap();
+    store
+        .insert_message(conversation.id, "assistant", "answer one")
+        .unwrap();
+    let anchor = store.last_message(conversation.id).unwrap().unwrap();
+
+    // Twelve attempts land: the original plus eleven retries. The ring
+    // holds only the newest ten of them.
+    store.ensure_anchor_variant(&anchor, Some("model-a")).unwrap();
+    for attempt in 1..=11 {
+        store
+            .append_variant(&anchor, &format!("retry {attempt}"), None, Some("model-b"), false)
+            .unwrap()
+            .expect("a complete answer always keeps");
+    }
+    let variants = store.list_variants(conversation.id).unwrap();
+    assert_eq!(variants.len(), 10, "the ring never exceeds ten");
+    let ordinals: Vec<i64> = variants.iter().map(|v| v.ordinal).collect();
+    assert_eq!(ordinals, (1..=10).collect::<Vec<i64>>(), "ordinals stay contiguous");
+    assert_eq!(variants[0].content, "retry 2", "the oldest attempts fell off");
+    assert_eq!(variants[9].content, "retry 11", "the newest attempt closes the ring");
+    assert!(variants[9].visible);
+    let anchor = store.last_message(conversation.id).unwrap().unwrap();
+    assert_eq!(anchor.content, "retry 11", "the anchor mirrors the shown variant");
+
+    // A stopped attempt counts toward the cap like any other: appending it
+    // pushes the next oldest attempt off the ring.
+    store
+        .append_variant(&anchor, "partial ans", None, Some("model-c"), true)
+        .unwrap()
+        .expect("a non-empty abort is evidence, not garbage");
+    let variants = store.list_variants(conversation.id).unwrap();
+    assert_eq!(variants.len(), 10, "the cap holds for aborted attempts too");
+    assert_eq!(variants[0].content, "retry 3", "the aborted append dropped the next oldest");
+    assert!(variants[9].aborted);
+    assert!(variants[9].visible);
 }
 
 // ---- Servers ----------------------------------------------------------------

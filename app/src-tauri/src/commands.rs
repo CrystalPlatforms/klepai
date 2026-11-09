@@ -1083,7 +1083,10 @@ pub fn apply_skill_injection(
 /// Order of operations: persist the user message first (auto-titling from it
 /// if this is the first one), then stream, then persist the assistant message
 /// once — including the partial content of an aborted or failed stream, so
-/// state stays consistent whatever happens.
+/// state stays consistent whatever happens. Sending also prunes the previous
+/// answer's variant ring (issue #46): the displayed variant's text stays as
+/// the message (the anchor row mirrors it), the kept rows go, and the
+/// database stays clean at send time rather than lazily.
 #[tauri::command]
 pub async fn send_message(
     state: State<'_, AppState>,
@@ -1125,6 +1128,10 @@ pub async fn send_message(
         let title_changed = guard
             .maybe_autotitle(conversation_id, &content)
             .map_err(|e| e.to_string())?;
+        // The follow-up exists, so the previous answer's kept attempts go
+        // (issue #46) — pruning is silent by decision: no recover affordance,
+        // the displayed variant lives on as the message itself.
+        guard.prune_variants(conversation_id).map_err(|e| e.to_string())?;
         guard.touch_conversation(conversation_id).map_err(|e| e.to_string())?;
         (user_message, title_changed)
     };

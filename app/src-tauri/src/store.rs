@@ -258,6 +258,10 @@ const SKILL_COLUMNS: &str =
 const ALLOWED_RULE_COLUMNS: &str = "id, conversation_id, kind, pattern, created_at";
 const MESSAGE_VARIANT_COLUMNS: &str =
     "id, message_id, content, thinking, model_id, aborted, ordinal, visible";
+/// The variant ring's hard ceiling (issue #47, PRD Q9): creating the next
+/// variant beyond this drops the oldest — FIFO, aborted attempts included.
+/// Hard-coded per decision; not a setting.
+const MAX_VARIANTS: usize = 10;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -981,23 +985,30 @@ impl Store {
     /// no variants yet — a plain send keeps none until the first
     /// regenerate click or a mid-run stop.
     pub fn list_variants(&self, conversation_id: i64) -> Result<Vec<MessageVariant>> {
-        let anchor_id = self
-            .conn
-            .query_row(
-                "SELECT id FROM messages
-                 WHERE conversation_id = ?1 AND role = 'assistant'
-                 ORDER BY id DESC LIMIT 1",
-                [conversation_id],
-                |row| row.get(0),
-            )
-            .map(Some)
-            .or_else(|err| match err {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(StoreError::from(other)),
-            })?;
-        match anchor_id {
+        match last_assistant_id(&self.conn, conversation_id)? {
             Some(id) => variants_of(&self.conn, id),
             None => Ok(Vec::new()),
+        }
+    }
+
+    /// Removes every variant row of the conversation's last assistant
+    /// answer (issue #46). Pruning happens at send time — the follow-up
+    /// user message lands and the ring goes with it — so the database
+    /// stays clean by design instead of lazily. Nothing the user read is
+    /// lost: the answer row already mirrors the displayed variant (issue
+    /// #43's context invariant), and that text simply stays as the
+    /// message. Returns how many rows went away; a send into a thread
+    /// with no answer (or one that never grew a ring) removes nothing.
+    pub fn prune_variants(&self, conversation_id: i64) -> Result<usize> {
+        match last_assistant_id(&self.conn, conversation_id)? {
+            Some(anchor_id) => {
+                let removed = self.conn.execute(
+                    "DELETE FROM message_variants WHERE message_id = ?1",
+                    [anchor_id],
+                )?;
+                Ok(removed)
+            }
+            None => Ok(0),
         }
     }
 
@@ -1017,6 +1028,26 @@ impl Store {
             return Ok(None);
         }
         let tx = self.conn.unchecked_transaction()?;
+        // FIFO cap (issue #47): the ring never holds more than MAX_VARIANTS
+        // rows. Room for the incoming variant is made by dropping the oldest,
+        // then renumbering the survivors so ordinals stay contiguous 1..n.
+        // Aborted attempts count like any other — evidence kept in the same
+        // ring. Whichever rows fall off, the visible marker ends on the
+        // incoming variant (the append below marks it), and `mirror_anchor`
+        // follows that, so the anchor row never loses its content.
+        let ring = variants_of(&tx, anchor.id)?;
+        if ring.len() >= MAX_VARIANTS {
+            let evict = ring.len() + 1 - MAX_VARIANTS;
+            for variant in &ring[..evict] {
+                tx.execute("DELETE FROM message_variants WHERE id = ?1", [variant.id])?;
+            }
+            for (position, variant) in ring[evict..].iter().enumerate() {
+                tx.execute(
+                    "UPDATE message_variants SET ordinal = ?1 WHERE id = ?2",
+                    rusqlite::params![(position + 1) as i64, variant.id],
+                )?;
+            }
+        }
         let next = next_ordinal(&tx, anchor.id)?;
         // Exactly one visible variant per anchor: the one just appended.
         tx.execute(
@@ -1332,6 +1363,23 @@ fn variants_of(conn: &Connection, message_id: i64) -> Result<Vec<MessageVariant>
     let rows = stmt.query_map([message_id], row_to_variant)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(StoreError::from)
+}
+
+/// The conversation's last assistant message — the only anchor the variant
+/// ring attaches to. `None` while the thread has no answer yet.
+fn last_assistant_id(conn: &Connection, conversation_id: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM messages
+         WHERE conversation_id = ?1 AND role = 'assistant'
+         ORDER BY id DESC LIMIT 1",
+        [conversation_id],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .or_else(|err| match err {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(StoreError::from(other)),
+    })
 }
 
 /// The ordinal the next variant of this anchor gets: one past the current

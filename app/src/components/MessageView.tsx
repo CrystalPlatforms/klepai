@@ -27,6 +27,10 @@ interface MessageViewProps {
   variants?: MessageVariant[];
   /** Steps the ring by one position — clamped at the ends by the caller. */
   onStepVariant?: (delta: 1 | -1) => void;
+  /** Streaming lock (issue #47): while a generation streams the ring
+   * cannot be stepped — `<` `>` render disabled and come back when the
+   * stream ends. Reads the same in-flight signal the composer uses. */
+  variantsLocked?: boolean;
   /** Edit affordance — the user's own messages. */
   onEdit?: () => void;
   onReply?: () => void;
@@ -47,6 +51,7 @@ export function MessageView({
   onRegenerate,
   variants,
   onStepVariant,
+  variantsLocked = false,
   onEdit,
   onReply,
   onDelete,
@@ -103,7 +108,7 @@ export function MessageView({
             <button
               type="button"
               onClick={() => onStepVariant(-1)}
-              disabled={shownVariant.ordinal <= 1}
+              disabled={variantsLocked || shownVariant.ordinal <= 1}
               aria-label="Previous variant"
               title="Previous variant"
               className={stepClass}
@@ -113,7 +118,7 @@ export function MessageView({
             <button
               type="button"
               onClick={() => onStepVariant(1)}
-              disabled={shownVariant.ordinal >= variantCount}
+              disabled={variantsLocked || shownVariant.ordinal >= variantCount}
               aria-label="Next variant"
               title="Next variant"
               className={stepClass}

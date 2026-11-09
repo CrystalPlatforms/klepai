@@ -13,6 +13,10 @@
 //!   variant; a zero-content abort keeps nothing at all.
 //! - Showing a variant moves exactly one visible marker and re-mirrors the
 //!   anchor row.
+//! - Sending a follow-up prunes every variant row of the previous answer at
+//!   send time; the answer keeps the displayed variant's text as its message
+//!   content, so nothing the user read is lost and the next reply reacts to
+//!   exactly what was on screen (issue #46).
 //! - Editing a user message rewrites its content and drops every later
 //!   message in the path (id order is the path in the Alpha).
 //! - Per-conversation settings (system prompt, temperature, context length,
@@ -238,6 +242,48 @@ fn a_zero_content_abort_keeps_no_variant_row() {
     assert_eq!(variants[0].content, "old answer");
     let anchor = store.last_message(conv.id).unwrap().unwrap();
     assert_eq!(anchor.content, "old answer");
+}
+
+// ---- Send prunes variants (issue #46) ----------------------------------------
+
+#[test]
+fn sending_a_follow_up_prunes_the_previous_answer_s_variants() {
+    let store = open("send-prunes-variants");
+    let conv = store.create_conversation(None).unwrap();
+    store.insert_message(conv.id, "user", "question").unwrap();
+    store.insert_message(conv.id, "assistant", "weak answer").unwrap();
+
+    // Two regenerates grow a ring of three; the user steps back to variant
+    // 1 and sends the follow-up with that text on screen.
+    regenerate_once(&store, conv.id, "better answer");
+    regenerate_once(&store, conv.id, "best answer");
+    let variants = store.list_variants(conv.id).unwrap();
+    assert_eq!(variants.len(), 3);
+    store.show_variant(variants[0].id).unwrap();
+
+    // The send persists the follow-up and prunes the ring — the exact pair
+    // send_message runs inside its persist block. Pruning is silent by
+    // decision: the kept attempts go, the displayed one stays as the
+    // message.
+    store.insert_message(conv.id, "user", "follow-up").unwrap();
+    let pruned = store.prune_variants(conv.id).unwrap();
+    assert_eq!(pruned, 3, "every variant row of the previous answer goes");
+
+    // The answer itself stays on the path carrying the displayed variant's
+    // text — history serves exactly what the user was looking at, so the
+    // next reply reacts to it by construction (issue #43's invariant).
+    let history = store.list_messages(conv.id).unwrap();
+    assert_eq!(history.len(), 3, "the follow-up joined the path");
+    assert_eq!(history[1].role, "assistant");
+    assert_eq!(history[1].content, "weak answer");
+    assert_eq!(history[2].role, "user");
+
+    // The ring is empty now…
+    assert!(store.list_variants(conv.id).unwrap().is_empty());
+
+    // …and a send with no ring to prune removes nothing.
+    store.insert_message(conv.id, "user", "again").unwrap();
+    assert_eq!(store.prune_variants(conv.id).unwrap(), 0);
 }
 
 // ---- Edit semantics ----------------------------------------------------------

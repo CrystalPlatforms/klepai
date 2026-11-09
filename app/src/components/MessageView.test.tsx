@@ -1,4 +1,4 @@
-//! MessageView variant navigation (issues #43/#45).
+//! MessageView variant navigation (issues #43/#45/#46/#47).
 //!
 //! Assumptions these tests encode:
 //! - The variant row renders on an assistant bubble only when the message
@@ -9,7 +9,12 @@
 //! - Stepping is parent-driven: the buttons report the direction and the
 //!   ends hold (clamped by ordinal), while the readout re-renders from the
 //!   `variants` prop the parent refreshes after the store flips the marker.
-//! - A bubble without variants renders no variant affordances at all.
+//! - A bubble without variants renders no variant affordances at all — and
+//!   the bubble that had them renders none once the answer is no longer the
+//!   last (issue #46: the parent retires the ring the moment a new message
+//!   exists, because sending pruned it in the store).
+//! - While a generation streams the step buttons render disabled (issue
+//!   #47's streaming lock) and come back enabled once the stream ends.
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -136,5 +141,46 @@ describe("MessageView variant navigation", () => {
       <MessageView message={userMessage} variants={ringOf(2)} onStepVariant={vi.fn()} />,
     );
     expect(screen.queryByTestId("variant-nav")).not.toBeInTheDocument();
+  });
+
+  it("drops the navigation once the answer is no longer the last (issue #46)", () => {
+    // The last assistant bubble carries the ring…
+    const { rerender } = render(
+      <MessageView message={baseMessage} variants={ringOf(2)} onStepVariant={vi.fn()} />,
+    );
+    expect(screen.getByTestId("variant-nav")).toBeInTheDocument();
+
+    // …and the moment a follow-up exists the parent retires it: sending
+    // pruned the ring in the store, so no variants ride this bubble anymore.
+    rerender(<MessageView message={baseMessage} />);
+    expect(screen.queryByTestId("variant-nav")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Previous variant" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next variant" })).not.toBeInTheDocument();
+  });
+
+  it("locks the step buttons while a generation streams, unlocking after (issue #47)", () => {
+    const onStepVariant = vi.fn();
+    // Mid-stream: mid-ring so the clamp cannot mask the lock — both
+    // directions render disabled.
+    const { rerender } = render(
+      <MessageView
+        message={baseMessage}
+        variants={ringOf(2)}
+        onStepVariant={onStepVariant}
+        variantsLocked
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Previous variant" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next variant" })).toBeDisabled();
+
+    // The stream ended: the same ring is steppable again.
+    rerender(
+      <MessageView message={baseMessage} variants={ringOf(2)} onStepVariant={onStepVariant} />,
+    );
+    expect(screen.getByRole("button", { name: "Previous variant" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next variant" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next variant" }));
+    expect(onStepVariant).toHaveBeenCalledWith(1);
   });
 });
