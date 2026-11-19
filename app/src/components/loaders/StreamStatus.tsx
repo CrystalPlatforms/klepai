@@ -17,6 +17,10 @@ interface StreamStatusProps {
   /** Where the reply comes from — a server model shows Connecting... while
    * the request is in flight; defaults to a CLI brain. */
   brain?: LoaderBrain;
+  /** A permission ask is pending in the open thread (v0.1.1, story 44):
+   * overrides every phase pattern with the needs-input state — all nine
+   * squares pulsing blue, in sync — until the user decides. */
+  needsInput?: boolean;
   className?: string;
   dotClassName?: string;
 }
@@ -31,12 +35,13 @@ interface StreamStatusProps {
 export function StreamStatus({
   stream,
   brain = "cli",
+  needsInput = false,
   className,
   dotClassName,
 }: StreamStatusProps) {
   const phase = stream === null ? { kind: "idle" as const } : currentPhase(stream, brain);
   const verb = phaseVerb(phase);
-  const label = labelFor(verb);
+  const label = needsInput ? "Needs input..." : labelFor(verb);
   const working = phase.kind !== "idle";
 
   return (
@@ -44,7 +49,14 @@ export function StreamStatus({
       className={cn("flex items-center gap-2 text-muted-foreground", className)}
       role="status"
     >
-      <AgentLoader type={verbLoader(verb)} dotClassName={dotClassName} />
+      {/* Needs input carries its own blue: the squares take the color from
+          CSS (`bg-current`), so a blue text span recolors the whole grid. */}
+      <span className={needsInput ? "text-blue-500" : undefined}>
+        <AgentLoader
+          type={needsInput ? "needs-input" : verbLoader(verb)}
+          dotClassName={dotClassName}
+        />
+      </span>
       {/* The key remounts the label on change — the fade-in IS the crossfade. */}
       <ShinyText
         key={label}

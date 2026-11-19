@@ -2112,10 +2112,15 @@ export function ChatPane({
             Ask about it
           </button>
         )}
-        {/* Always visible: the phase loader while streaming, Idle at rest. */}
+        {/* Always visible: the phase loader while streaming, Idle at rest.
+            A pending permission ask (v0.1.1, story 44) overrides the phase
+            with the needs-input state — all squares pulsing blue, in sync;
+            deciding returns the normal phases immediately. Codex never
+            raises a permission ask, so it never shows this state. */}
         <StreamStatus
           stream={stream}
           brain={isCliBrain ? "cli" : "server"}
+          needsInput={permission != null}
           className="mb-2 px-1"
           dotClassName="h-[3px] w-[3px]"
         />
@@ -2917,7 +2922,9 @@ function permissionVerb(toolName: string): string {
 }
 
 /** The permission ask (issue #28): the agent paused on something that needs
- * a decision — the composer swaps to this panel until it is answered. */
+ * a decision — the composer swaps to this panel until it is answered.
+ * v0.1.1 (story 44): re-accented from amber to blue — blue is the single
+ * needs-input color everywhere (owner decision, Q19). */
 function PermissionAskPanel({
   ask,
   onAnswer,
@@ -2926,9 +2933,9 @@ function PermissionAskPanel({
   onAnswer: (allow: boolean, remember: "conversation" | "global" | null) => void;
 }) {
   return (
-    <div className="min-w-0 flex-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+    <div className="min-w-0 flex-1 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-2.5">
       <div className="flex items-start gap-2">
-        <IconShieldExclamation className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <IconShieldExclamation className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-foreground">
             The agent wants to {permissionVerb(ask.toolName)}:
