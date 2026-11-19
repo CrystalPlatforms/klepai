@@ -106,8 +106,11 @@ export default function NotificationBannerHost() {
     void (async () => {
       try {
         await appWindow.setSize(new LogicalSize(340, height));
-      } catch {
+      } catch (error) {
         // A refused resize degrades to the fixed-size window — still shown.
+        // Loud in dev: the usual cause is a stale binary running without the
+        // core:window:allow-set-size capability grant.
+        console.error("banner setSize failed", error);
       }
       if (toasts.length > 0) {
         void appWindow.show();

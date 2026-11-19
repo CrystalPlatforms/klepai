@@ -223,8 +223,22 @@ export function initBannerDelivery(): () => void {
   };
 }
 
+/** Near-simultaneous deliveries of the SAME conversation + type collapse
+ * into one: any leaked duplicate subscription (StrictMode dev remount, an
+ * HMR boundary, a re-init) reaches this choke point, and identical content
+ * within the window is a duplicate, not a second event. Two DIFFERENT
+ * conversations — or different kinds — still each notify (PRD: no
+ * aggregation); a real re-occurrence of the same kind for one conversation
+ * inside the window is not a realistic flow (a generation takes longer). */
+const DEDUPE_WINDOW_MS = 2000;
+const lastDeliveredAt = new Map<string, number>();
+
 /** Hands one accepted notification to the platform's delivery layer. */
 export async function deliverNotification(content: AppNotification): Promise<void> {
+  const dedupeKey = `${content.conversationId}|${content.typeLine}`;
+  const now = Date.now();
+  if (now - (lastDeliveredAt.get(dedupeKey) ?? 0) < DEDUPE_WINDOW_MS) return;
+  lastDeliveredAt.set(dedupeKey, now);
   if (platformIsMacOS()) {
     await deliverNative(content);
     return;
