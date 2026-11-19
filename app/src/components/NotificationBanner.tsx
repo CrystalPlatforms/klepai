@@ -19,6 +19,7 @@ import {
   getCurrentWindow,
   LogicalSize,
   PhysicalPosition,
+  primaryMonitor,
 } from "@tauri-apps/api/window";
 
 import {
@@ -43,35 +44,15 @@ export default function NotificationBannerHost() {
   const [toasts, setToasts] = useState<BannerToast[]>([]);
   const stackRef = useRef<HTMLDivElement>(null);
 
-  // Boot: position the window, then subscribe and announce readiness —
-  // toasts pushed before this page loaded are flushed by the manager on
-  // the ready handshake. The disposed flag keeps a StrictMode double-mount
-  // from leaking a listener resolved after cleanup.
+  // Boot: subscribe and announce readiness — toasts pushed before this page
+  // loaded are flushed by the manager on the ready handshake. The disposed
+  // flag keeps a StrictMode double-mount from leaking a listener resolved
+  // after cleanup.
   useEffect(() => {
     let disposed = false;
     const unlisteners: (() => void)[] = [];
-    const appWindow = getCurrentWindow();
 
     void (async () => {
-      try {
-        const monitor = await currentMonitor();
-        if (monitor) {
-          const x =
-            monitor.workArea.position.x +
-            monitor.workArea.size.width -
-            Math.round(340 * monitor.scaleFactor) -
-            MARGIN;
-          const y =
-            monitor.workArea.position.y +
-            monitor.workArea.size.height -
-            Math.round(280 * monitor.scaleFactor) -
-            MARGIN;
-          await appWindow.setPosition(new PhysicalPosition(x, y));
-        }
-      } catch {
-        // Default position beats a crash — the corner is cosmetic.
-      }
-
       const un = await listen<BannerToast>(BANNER_SHOW_EVENT, (event) => {
         const toast = event.payload;
         // Dedupe by key: a live delivery followed by the ready-flush of the
@@ -94,23 +75,41 @@ export default function NotificationBannerHost() {
     };
   }, []);
 
-  // The window hugs the stack: its height tracks the rendered toasts, then
-  // it is visible exactly while the stack is not empty. Layout effect so the
-  // resize lands BEFORE the first paint at the new stack size — no frame of
-  // dead space above the toasts (the window is always-on-top, so an
-  // oversized body sits over other apps' pixels). CSS px are logical px.
+  // The window hugs the stack: its height tracks the rendered toasts, and it
+  // is re-positioned so its BOTTOM edge stays pinned to the work area's
+  // bottom-right — sizing alone would shrink the window around its TOP
+  // edge, leaving the toast floating mid-screen above the bottom. All
+  // geometry in physical px (the work area is physical): the logical height
+  // is scaled by the monitor's factor. A hidden window's current monitor
+  // can be flaky — fall back to the primary before giving up.
+  // Layout effect so the resize lands BEFORE the first paint at the new
+  // stack size — no frame of dead space; CSS px are logical px.
   useLayoutEffect(() => {
     const appWindow = getCurrentWindow();
-    const contentHeight = stackRef.current?.scrollHeight ?? MIN_HEIGHT;
-    const height = Math.max(MIN_HEIGHT, Math.ceil(contentHeight));
+    const height = Math.max(MIN_HEIGHT, Math.ceil(stackRef.current?.scrollHeight ?? MIN_HEIGHT));
     void (async () => {
       try {
         await appWindow.setSize(new LogicalSize(340, height));
+        const monitor = (await currentMonitor()) ?? (await primaryMonitor());
+        if (monitor) {
+          const scale = monitor.scaleFactor;
+          const x =
+            monitor.workArea.position.x +
+            monitor.workArea.size.width -
+            Math.round(340 * scale) -
+            MARGIN;
+          const y =
+            monitor.workArea.position.y +
+            monitor.workArea.size.height -
+            Math.round(height * scale) -
+            MARGIN;
+          await appWindow.setPosition(new PhysicalPosition(x, y));
+        }
       } catch (error) {
         // A refused resize degrades to the fixed-size window — still shown.
         // Loud in dev: the usual cause is a stale binary running without the
         // core:window:allow-set-size capability grant.
-        console.error("banner setSize failed", error);
+        console.error("banner resize/position failed", error);
       }
       if (toasts.length > 0) {
         void appWindow.show();
