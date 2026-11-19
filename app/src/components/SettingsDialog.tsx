@@ -7,6 +7,7 @@ import { ModePill } from "@/components/ChatPane";
 
 import type { AllowedRule, AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
 import { formatBytes } from "@/lib/skillSize";
+import { notificationsEnabled, setNotificationsEnabled } from "@/lib/settings";
 import {
   defaultUpdaterApi,
   downloadProgressText,
@@ -708,7 +709,11 @@ function SkillsTab({ open }: { open: boolean }) {
               key={skill.id}
               className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2"
             >
-              <SkillToggle skill={skill} onToggle={(enabled) => void toggle(skill, enabled)} />
+              <SkillToggle
+                enabled={skill.enabled}
+                label={skill.name}
+                onToggle={(enabled) => void toggle(skill, enabled)}
+              />
               <div className="w-0 min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm">{skill.name}</span>
@@ -794,10 +799,13 @@ function SkillsTab({ open }: { open: boolean }) {
 }
 
 function SkillToggle({
-  skill,
+  enabled,
+  label,
   onToggle,
 }: {
-  skill: StoredSkill;
+  enabled: boolean;
+  /** Name used to build the accessible label ("Disable <name>"). */
+  label: string;
   onToggle: (enabled: boolean) => void;
 }) {
   // Explicit pixel sizing + style-driven knob travel: the project's
@@ -807,20 +815,20 @@ function SkillToggle({
     <button
       type="button"
       role="switch"
-      aria-checked={skill.enabled}
-      aria-label={skill.enabled ? `Disable ${skill.name}` : `Enable ${skill.name}`}
-      onClick={() => onToggle(!skill.enabled)}
+      aria-checked={enabled}
+      aria-label={enabled ? `Disable ${label}` : `Enable ${label}`}
+      onClick={() => onToggle(!enabled)}
       style={{ width: 34, height: 20, padding: 2 }}
       className={cn(
         "relative inline-flex shrink-0 items-center rounded-full transition-colors",
-        skill.enabled ? "bg-primary" : "bg-muted-foreground/30"
+        enabled ? "bg-primary" : "bg-muted-foreground/30"
       )}
     >
       <span
         style={{
           width: 14,
           height: 14,
-          transform: skill.enabled ? "translateX(14px)" : "translateX(0px)",
+          transform: enabled ? "translateX(14px)" : "translateX(0px)",
         }}
         className="rounded-full bg-background shadow-sm transition-transform"
       />
@@ -1107,6 +1115,42 @@ function DefaultsTab({ open }: { open: boolean }) {
       </div>
 
       {saved && <p className="text-xs text-primary">Saved.</p>}
+
+      <NotificationsSection />
+    </div>
+  );
+}
+
+// ---- Notifications (issue #50) --------------------------------------------
+
+/** The single notifications on/off toggle (issue #50). Off silences every
+ * notification — Finished, Needs input, Error — but leaves the in-thread
+ * blue loader and the sidebar needs-input status untouched: those are UI,
+ * not notifications. Broadcasts `klepai:notifications-changed` so listeners
+ * re-read the preference without a remount. */
+function NotificationsSection() {
+  const [enabled, setEnabled] = useState(true);
+
+  useEffect(() => {
+    setEnabled(notificationsEnabled());
+  }, []);
+
+  const toggle = (next: boolean) => {
+    setEnabled(next);
+    setNotificationsEnabled(next);
+    window.dispatchEvent(new Event("klepai:notifications-changed"));
+  };
+
+  return (
+    <div className="flex items-center gap-3 border-t border-border pt-3">
+      <SkillToggle enabled={enabled} label="Notifications" onToggle={toggle} />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm">Notifications</div>
+        <p className="text-xs text-muted-foreground">
+          Notify when a background conversation finishes, needs your input or
+          fails.
+        </p>
+      </div>
     </div>
   );
 }
