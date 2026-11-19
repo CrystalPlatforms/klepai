@@ -39,6 +39,11 @@ export default function App() {
   /** Conversations whose last generation failed (issue #23) — the sidebar
    * marks them with the error loader until the next send clears it. */
   const [errorIds, setErrorIds] = useState<Set<number>>(new Set());
+  /** Conversations with a pending permission ask (v0.1.1, issue #56) — the
+   * sidebar shows the blue needs-input status regardless of the Settings
+   * toggle and regardless of which conversation is open. Driven by the
+   * global lifecycle events, so background conversations show it too. */
+  const [needsInputIds, setNeedsInputIds] = useState<Set<number>>(new Set());
 
   // ---- Notification decision layer (issue #52) ----------------------------
   // The global conversation-lifecycle listener decides per event whether to
@@ -87,6 +92,26 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<LifecyclePayload>(LIFECYCLE_EVENT, async (event) => {
+      const payload = event.payload;
+      // Sidebar needs-input status (issue #56): pure UI state — it tracks
+      // the events no matter what the notification toggle says. Finished
+      // leaves no trace on the card.
+      if (payload.kind === "needs_input" || payload.kind === "needs_input_cleared") {
+        const add = payload.kind === "needs_input";
+        setNeedsInputIds((current) => {
+          if (add ? current.has(payload.conversation_id) : !current.has(payload.conversation_id)) {
+            return current;
+          }
+          const next = new Set(current);
+          if (add) {
+            next.add(payload.conversation_id);
+          } else {
+            next.delete(payload.conversation_id);
+          }
+          return next;
+        });
+      }
+
       let minimized = false;
       try {
         minimized = await getCurrentWindow().isMinimized();
@@ -98,8 +123,8 @@ export default function App() {
         windowVisible: windowVisibleRef.current && !minimized,
         enabled: enabledRef.current,
       };
-      if (!shouldNotify(event.payload, decision)) return;
-      const content = buildNotification(event.payload);
+      if (!shouldNotify(payload, decision)) return;
+      const content = buildNotification(payload);
       if (content) void deliverNotification(content);
     }).then((fn) => {
       unlisten = fn;
@@ -197,6 +222,12 @@ export default function App() {
         next.delete(id);
         return next;
       });
+      setNeedsInputIds((current) => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     } catch (error) {
       console.error("Failed to delete conversation:", error);
     }
@@ -226,6 +257,7 @@ export default function App() {
         selectedId={selectedId}
         streamingIds={streamingIds}
         errorIds={errorIds}
+        needsInputIds={needsInputIds}
         open={sidebarOpen}
         onSelect={handleSelect}
         onCreate={handleCreate}
