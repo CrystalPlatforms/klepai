@@ -40,6 +40,11 @@ pub struct AppState {
     /// is held across the worktree's async git setup. In-memory only: a
     /// restart loses the override, the worktree stays on disk.
     pub worktrees: tokio::sync::Mutex<collision::WorktreeOverrides>,
+    /// The app handle, captured at setup so deep in the send pipeline
+    /// (`stream_reply`, the agent event closure, `ask_permission`) can emit
+    /// the global `conversation-lifecycle` event without an `AppHandle`
+    /// threaded through every signature.
+    pub app: std::sync::OnceLock<tauri::AppHandle>,
 }
 
 /// The pre-flight the frontend runs BEFORE touching the updater plugin
@@ -73,6 +78,7 @@ pub fn run() {
                 permissions: Mutex::new(HashMap::new()),
                 runs: Mutex::new(HashMap::new()),
                 worktrees: tokio::sync::Mutex::new(HashMap::new()),
+                app: std::sync::OnceLock::from(app.handle().clone()),
             });
             Ok(())
         })

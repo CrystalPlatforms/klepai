@@ -32,6 +32,60 @@ use crate::AppState;
 
 type CmdResult<T> = Result<T, String>;
 
+// ---- Conversation lifecycle event (v0.1.1) -----------------------------------
+
+/// The global Tauri event a conversation's notification-worthy transitions
+/// ride on: `finished`, `error`, `needs_input`, `needs_input_cleared`. The
+/// frontend listens globally — the backend never needs to know which
+/// conversation is open or whether the window is focused.
+pub const LIFECYCLE_EVENT: &str = "conversation-lifecycle";
+
+/// Payload of `LIFECYCLE_EVENT`. `message` carries the error text on kind
+/// `error` and is absent otherwise.
+#[derive(Serialize)]
+pub struct ConversationLifecycle {
+    pub conversation_id: i64,
+    pub conversation_name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// The conversation's display name at emission time — the send pipeline only
+/// holds ids, so the title is read from the store here. A store failure falls
+/// back to a stable placeholder instead of dropping the event.
+fn conversation_name(state: &AppState, conversation_id: i64) -> String {
+    state
+        .store
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get_conversation(conversation_id).ok())
+        .map(|conversation| conversation.title)
+        .unwrap_or_else(|| format!("Conversation #{conversation_id}"))
+}
+
+/// Emits one `conversation-lifecycle` event to every window. Best-effort: a
+/// notify surface must never break the run it reports on.
+fn emit_lifecycle(
+    state: &AppState,
+    conversation_id: i64,
+    kind: &str,
+    message: Option<String>,
+) {
+    let Some(app) = state.app.get() else { return };
+    let event = ConversationLifecycle {
+        conversation_id,
+        conversation_name: conversation_name(state, conversation_id),
+        kind: kind.to_string(),
+        message,
+    };
+    if let Err(error) = tauri::Emitter::emit(app, LIFECYCLE_EVENT, &event) {
+        crate::agent::agent_log(&format!(
+            "lifecycle emit failed conversation={conversation_id} kind={kind}: {error}"
+        ));
+    }
+}
+
 fn with_store<T>(
     state: &State<'_, AppState>,
     f: impl FnOnce(&Store) -> crate::store::Result<T>,
@@ -173,6 +227,14 @@ pub enum PendingPermission {
     },
 }
 
+/// The conversation a pending ask belongs to — the lifecycle event's subject.
+fn pending_conversation_id(pending: &PendingPermission) -> i64 {
+    match pending {
+        PendingPermission::Cli { conversation_id, .. }
+        | PendingPermission::Loop { conversation_id, .. } => *conversation_id,
+    }
+}
+
 /// Settings → Allowed: the global ("permanently") rules only.
 #[tauri::command]
 pub fn list_allowed_commands(state: State<'_, AppState>) -> CmdResult<Vec<AllowedRule>> {
@@ -205,6 +267,9 @@ pub async fn respond_permission(
     let Some(pending) = pending else {
         return Err("no such permission request (already answered?)".into());
     };
+    // The ask is gone from the map — tell every listener the conversation no
+    // longer needs input (the sidebar status clears off this event).
+    let lifecycle_conversation_id = pending_conversation_id(&pending);
 
     let (tool_name, target, rule_conversation_id) = match pending {
         PendingPermission::Cli {
@@ -244,6 +309,7 @@ pub async fn respond_permission(
             store.add_allowed_rule(scope, kind, &pattern)
         })?;
     }
+    emit_lifecycle(&state, lifecycle_conversation_id, "needs_input_cleared", None);
     Ok(())
 }
 
@@ -1253,6 +1319,12 @@ async fn stream_reply(
             let _ = channel.send(ChatStreamEvent::Error {
                 message: error.to_string(),
             });
+            emit_lifecycle(
+                state,
+                conversation_id,
+                "error",
+                Some(error.to_string()),
+            );
             return Err(error.to_string());
         }
     };
@@ -1308,6 +1380,11 @@ async fn stream_reply(
         thinking: outcome.thinking.clone(),
         aborted: outcome.aborted,
     });
+    // A user stop is the user's own act — it never notifies (v0.1.1); a
+    // natural completion does.
+    if !outcome.aborted {
+        emit_lifecycle(state, conversation_id, "finished", None);
+    }
     Ok(generation_id)
 }
 
@@ -1594,6 +1671,10 @@ pub async fn send_agent_message(
                                                     conversation_id,
                                                 },
                                             );
+                                        // The conversation now waits on the
+                                        // user — background listeners learn
+                                        // it here (v0.1.1).
+                                        emit_lifecycle(&state, conversation_id, "needs_input", None);
                                         Some(ChatStreamEvent::PermissionRequest {
                                             request_id,
                                             tool_name,
@@ -1672,6 +1753,7 @@ pub async fn send_agent_message(
             // Spawn-level failures (missing CLI, connect errors) persist
             // nothing; the error text carries the guidance itself.
             let _ = channel.send(ChatStreamEvent::Error { message: message.clone() });
+            emit_lifecycle(&state, conversation_id, "error", Some(message.clone()));
             return Err(message);
         }
     };
@@ -1719,12 +1801,22 @@ pub async fn send_agent_message(
         }
     }
 
+    let run_error = error.or(worktree_error);
     let _ = channel.send(ChatStreamEvent::AgentDone {
         aborted,
-        error: error.clone().or(worktree_error),
+        error: run_error.clone(),
     });
-    if let Some(error) = error {
-        return Err(error);
+    // Lifecycle mirror of AgentDone (v0.1.1): a user stop stays silent, a
+    // run or worktree merge-back failure reports `error`, a clean run
+    // reports `finished`.
+    if !aborted {
+        match &run_error {
+            Some(message) => emit_lifecycle(&state, conversation_id, "error", Some(message.clone())),
+            None => emit_lifecycle(&state, conversation_id, "finished", None),
+        }
+    }
+    if let Some(message) = run_error {
+        return Err(message);
     }
     Ok(generation_id)
 }
@@ -1971,6 +2063,9 @@ async fn ask_permission(
                 conversation_id,
             },
         );
+    // The conversation now waits on the user — background listeners learn
+    // it here (v0.1.1).
+    emit_lifecycle(state, conversation_id, "needs_input", None);
     let _ = channel.send(ChatStreamEvent::PermissionRequest {
         request_id: request_id.clone(),
         tool_name: tool_name.to_string(),
@@ -1994,13 +2089,19 @@ async fn ask_permission(
             Err(oneshot::error::TryRecvError::Closed) => break,
         }
     }
-    // `respond_permission` removed the entry on an answer; an aborted or
-    // abandoned ask leaves it behind — drop it either way.
-    state
+    // `respond_permission` removed the entry on an answer (and emitted
+    // `needs_input_cleared` itself); an aborted or abandoned ask leaves it
+    // behind — drop it either way, and clear the surface only when this
+    // removal is the one that actually took the entry.
+    let removed = state
         .permissions
         .lock()
         .expect("permission lock")
-        .remove(&request_id);
+        .remove(&request_id)
+        .is_some();
+    if removed {
+        emit_lifecycle(state, conversation_id, "needs_input_cleared", None);
+    }
     allowed
 }
 
