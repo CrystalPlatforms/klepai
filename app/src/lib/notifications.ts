@@ -197,15 +197,30 @@ async function pushBanner(content: AppNotification): Promise<void> {
 }
 
 /** Registers the Windows/Linux banner delivery. Called once from the app
- * shell; the window is only created on the first accepted notification. */
-export function initBannerDelivery(): void {
+ * shell; the window is only created on the first accepted notification.
+ * Returns the readiness-listener cleanup — the StrictMode dev double-mount
+ * would otherwise leak a second flush listener (the same disposed-flag
+ * pattern the lifecycle listener in App uses). */
+export function initBannerDelivery(): () => void {
   setBannerDelivery((content) => void pushBanner(content));
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
   void listen(BANNER_READY_EVENT, () => {
     for (const [key, toast] of pendingToasts) {
       void emit(BANNER_SHOW_EVENT, toast);
       pendingToasts.delete(key);
     }
+  }).then((fn) => {
+    if (disposed) {
+      fn();
+      return;
+    }
+    unlisten = fn;
   });
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
 }
 
 /** Hands one accepted notification to the platform's delivery layer. */
@@ -286,7 +301,14 @@ export async function activateNotificationConversation(
  * handler as the banner: un-minimize, focus, navigate — identical on all
  * platforms. A click on a notification whose payload is missing can still
  * be told apart (`tap`), but has nothing to navigate to — dropped. */
+let nativeClickWired = false;
+
 export function initNativeClickHandling(): void {
+  // Once per process: the plugin's action stream keeps earlier subscriptions
+  // alive, so a StrictMode/HMR re-init must not stack a second one (a click
+  // would then run the focus+navigate handler twice).
+  if (nativeClickWired) return;
+  nativeClickWired = true;
   void onAction(async (event) => {
     if (event.actionId !== "tap") return;
     const conversationId = event.notification?.extra?.conversationId;

@@ -94,6 +94,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // StrictMode dev double-mount: the first mount's cleanup runs BEFORE its
+    // listen() promise resolves, so the plain `unlisten?.()` cleanup leaks
+    // that listener — every lifecycle event was then handled twice and each
+    // notification went out as two identical banners. The disposed flag
+    // (the NotificationBannerHost pattern) unsubscribes a late-resolved
+    // listener instead of leaking it.
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<LifecyclePayload>(LIFECYCLE_EVENT, async (event) => {
       const payload = event.payload;
@@ -131,9 +138,16 @@ export default function App() {
       const content = buildNotification(payload);
       if (content) void deliverNotification(content);
     }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
       unlisten = fn;
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -157,11 +171,12 @@ export default function App() {
   // invoked by the decision layer (issue #52); the window itself is only
   // created on the first accepted notification.
   useEffect(() => {
-    initBannerDelivery();
+    const disposeBanner = initBannerDelivery();
     // Native clicks (macOS, issue #55) must be wired before the first
     // notification is sent — the plugin only reports clicks for
     // notifications posted while a listener existed.
     initNativeClickHandling();
+    return disposeBanner;
   }, []);
 
   const handleCreate = async () => {
