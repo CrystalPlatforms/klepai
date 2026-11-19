@@ -21,6 +21,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 export const LIFECYCLE_EVENT = "conversation-lifecycle";
@@ -235,4 +236,40 @@ async function deliverNative(content: AppNotification): Promise<void> {
   } catch {
     // Notifications are a courtesy surface — swallow delivery errors.
   }
+}
+
+// ---- Click behavior (issue #54) -------------------------------------------
+// One shared handler for EVERY delivery — banner (Windows/Linux) and native
+// (macOS) alike: bring the Klepai window to front, un-minimize it, focus it,
+// then switch to the notification's conversation. Dismissing a banner (the
+// auto-dismiss timeout) never reaches this handler, so it never navigates.
+
+/** The navigation path — App registers its existing select-and-show route
+ * (setSelectedId plus the scroll bookkeeping). */
+type Navigator = (conversationId: number) => void;
+let navigateTo: Navigator | null = null;
+
+export function setNotificationNavigator(navigate: Navigator | null): void {
+  navigateTo = navigate;
+}
+
+/** Focuses Klepai and navigates to the notification's conversation. */
+export async function activateNotificationConversation(
+  conversationId: number,
+): Promise<void> {
+  try {
+    const appWindow = getCurrentWindow();
+    let minimized = false;
+    try {
+      minimized = await appWindow.isMinimized();
+    } catch {
+      minimized = false;
+    }
+    if (minimized) await appWindow.unminimize();
+    await appWindow.show();
+    await appWindow.setFocus();
+  } catch {
+    // Window ops are best-effort — the navigation still happens.
+  }
+  navigateTo?.(conversationId);
 }

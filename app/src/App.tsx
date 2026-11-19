@@ -12,9 +12,12 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 import { trackAppOpen } from "@/lib/analytics";
 import {
   LIFECYCLE_EVENT,
+  BANNER_ACTIVATE_EVENT,
+  activateNotificationConversation,
   buildNotification,
   deliverNotification,
   initBannerDelivery,
+  setNotificationNavigator,
   shouldNotify,
   type LifecyclePayload,
 } from "@/lib/notifications";
@@ -234,13 +237,34 @@ export default function App() {
   };
 
   /** Opens a conversation by clicking its row — a pending jump for a
-   * different conversation is stale and cleared. */
-  const handleSelect = (id: number) => {
+   * different conversation is stale and cleared. Stable: it is also the
+   * shared click-behavior navigator (issue #54). */
+  const handleSelect = useCallback((id: number) => {
     setJumpTarget((current) =>
       current && current.conversationId !== id ? null : current,
     );
     setSelectedId(id);
-  };
+  }, []);
+
+  // Shared click behavior (issue #54): BOTH deliveries funnel through
+  // activateNotificationConversation — the banner over the
+  // klepai:banner-activate event, the native notification over the
+  // plugin's action callback (issue #55). The navigator is the existing
+  // conversation-switching path, so the behavior is identical everywhere.
+  useEffect(() => {
+    setNotificationNavigator(handleSelect);
+    return () => setNotificationNavigator(null);
+  }, [handleSelect]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ conversationId: number }>(BANNER_ACTIVATE_EVENT, (event) => {
+      void activateNotificationConversation(event.payload.conversationId);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
 
   /** Opens the hit's conversation and asks ChatPane to scroll to it. */
   const handleJumpTo = (hit: SearchHit) => {
