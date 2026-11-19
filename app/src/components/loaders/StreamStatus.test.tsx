@@ -90,4 +90,26 @@ describe("StreamStatus", () => {
     render(<StreamStatus stream={textStream("Hi")} />);
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
+
+  // Needs input (v0.1.1, story 44): a pending permission ask overrides every
+  // phase — the label reads Needs input... and its own blue span recolors
+  // the loader grid (the squares take the color from CSS via bg-current).
+  it("overrides any phase with Needs input while a permission ask is pending", () => {
+    const segments: StreamSegment[] = [
+      { kind: "activity", title: "Reading app.rs", detail: "", open: true },
+    ];
+    render(<StreamStatus stream={{ thinking: "", segments }} needsInput />);
+    expect(screen.getByText("Needs input...")).toBeInTheDocument();
+    expect(screen.queryByText("Reading...")).not.toBeInTheDocument();
+  });
+
+  it("paints the needs-input loader blue and only while the ask is pending", () => {
+    const view = render(<StreamStatus stream={null} needsInput />);
+    expect(screen.getByText("Needs input...")).toBeInTheDocument();
+    expect(view.container.querySelector(".text-blue-500")).not.toBeNull();
+
+    view.rerender(<StreamStatus stream={null} />);
+    expect(screen.queryByText("Needs input...")).not.toBeInTheDocument();
+    expect(view.container.querySelector(".text-blue-500")).toBeNull();
+  });
 });
