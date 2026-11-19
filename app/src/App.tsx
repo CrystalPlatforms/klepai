@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { Conversation, SearchHit } from "@/types";
 import { Sidebar } from "@/components/Sidebar";
@@ -8,6 +10,14 @@ import { DetailPane } from "@/components/DetailPane";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { trackAppOpen } from "@/lib/analytics";
+import {
+  LIFECYCLE_EVENT,
+  buildNotification,
+  deliverNotification,
+  shouldNotify,
+  type LifecyclePayload,
+} from "@/lib/notifications";
+import { notificationsEnabled } from "@/lib/settings";
 
 /** A pending "open this conversation scrolled to this message" request. */
 interface JumpTarget {
@@ -28,6 +38,73 @@ export default function App() {
   /** Conversations whose last generation failed (issue #23) — the sidebar
    * marks them with the error loader until the next send clears it. */
   const [errorIds, setErrorIds] = useState<Set<number>>(new Set());
+
+  // ---- Notification decision layer (issue #52) ----------------------------
+  // The global conversation-lifecycle listener decides per event whether to
+  // notify: only when the conversation is in the background (a different
+  // one is on screen, or the window is unfocused/minimized) and the
+  // Settings toggle is on. The decision reads live values through refs so
+  // the listener subscribes once and never misses an event on re-render.
+
+  /** Mirrors the focused state of the Klepai window. */
+  const [windowVisible, setWindowVisible] = useState(true);
+  const selectedIdRef = useRef(selectedId);
+  const windowVisibleRef = useRef(windowVisible);
+  /** Mirrors the Settings toggle (read on the hot event path). */
+  const enabledRef = useRef(notificationsEnabled());
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    windowVisibleRef.current = windowVisible;
+  }, [windowVisible]);
+
+  // Window focus/blur — the payload IS the new focused state.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => setWindowVisible(focused))
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
+  }, []);
+
+  // The Settings toggle broadcasts after every flip (issue #50); re-read
+  // the stored value so the listener always sees the current preference.
+  useEffect(() => {
+    const sync = () => {
+      enabledRef.current = notificationsEnabled();
+    };
+    sync();
+    window.addEventListener("klepai:notifications-changed", sync);
+    return () => window.removeEventListener("klepai:notifications-changed", sync);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<LifecyclePayload>(LIFECYCLE_EVENT, async (event) => {
+      let minimized = false;
+      try {
+        minimized = await getCurrentWindow().isMinimized();
+      } catch {
+        minimized = false;
+      }
+      const decision = {
+        selectedId: selectedIdRef.current,
+        windowVisible: windowVisibleRef.current && !minimized,
+        enabled: enabledRef.current,
+      };
+      if (!shouldNotify(event.payload, decision)) return;
+      const content = buildNotification(event.payload);
+      if (content) void deliverNotification(content);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
