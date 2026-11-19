@@ -17,6 +17,7 @@ import {
   buildNotification,
   deliverNotification,
   initBannerDelivery,
+  initNativeClickHandling,
   setNotificationNavigator,
   shouldNotify,
   type LifecyclePayload,
@@ -157,6 +158,10 @@ export default function App() {
   // created on the first accepted notification.
   useEffect(() => {
     initBannerDelivery();
+    // Native clicks (macOS, issue #55) must be wired before the first
+    // notification is sent — the plugin only reports clicks for
+    // notifications posted while a listener existed.
+    initNativeClickHandling();
   }, []);
 
   const handleCreate = async () => {

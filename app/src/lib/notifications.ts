@@ -17,6 +17,7 @@
 
 import {
   isPermissionGranted,
+  onAction,
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
@@ -272,4 +273,25 @@ export async function activateNotificationConversation(
     // Window ops are best-effort — the navigation still happens.
   }
   navigateTo?.(conversationId);
+}
+
+// ---- Native click handling, macOS (issue #55) ------------------------------
+
+/** Wires the native notification's click callback. Unlike the banner's
+ * click (a DOM event on our own window), a native click arrives through the
+ * plugin's action stream — and desktop plugins only report clicks for
+ * notifications sent WHILE a listener existed, so App registers this once
+ * at startup, before any notification goes out. Each notification carries
+ * its conversation id in `extra`, and a click lands in the SAME shared
+ * handler as the banner: un-minimize, focus, navigate — identical on all
+ * platforms. A click on a notification whose payload is missing can still
+ * be told apart (`tap`), but has nothing to navigate to — dropped. */
+export function initNativeClickHandling(): void {
+  void onAction(async (event) => {
+    if (event.actionId !== "tap") return;
+    const conversationId = event.notification?.extra?.conversationId;
+    if (typeof conversationId === "number") {
+      await activateNotificationConversation(conversationId);
+    }
+  });
 }
