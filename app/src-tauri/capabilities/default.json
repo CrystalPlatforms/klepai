@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main Klepai window",
+  "description": "Default capability for the main Klepai window and the notification banner window",
   "windows": [
-    "main"
+    "main",
+    "notification-banner"
   ],
   "permissions": [
     "core:default",
@@ -12,6 +13,14 @@
     "opener:default",
     "updater:default",
     "process:allow-restart",
-    "notification:default"
+    "notification:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-position",
+    "core:window:allow-current-monitor",
+    "core:window:allow-is-minimized",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-focus"
   ]
 }

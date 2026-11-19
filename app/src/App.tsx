@@ -14,6 +14,7 @@ import {
   LIFECYCLE_EVENT,
   buildNotification,
   deliverNotification,
+  initBannerDelivery,
   shouldNotify,
   type LifecyclePayload,
 } from "@/lib/notifications";
@@ -121,6 +122,13 @@ export default function App() {
   // One anonymous launch count per production run (issue #31).
   useEffect(() => {
     trackAppOpen();
+  }, []);
+
+  // Register the Windows/Linux banner delivery (issue #53) — the sink is
+  // invoked by the decision layer (issue #52); the window itself is only
+  // created on the first accepted notification.
+  useEffect(() => {
+    initBannerDelivery();
   }, []);
 
   const handleCreate = async () => {

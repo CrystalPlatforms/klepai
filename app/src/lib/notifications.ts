@@ -20,6 +20,8 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { emit, listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 export const LIFECYCLE_EVENT = "conversation-lifecycle";
 
@@ -121,6 +123,87 @@ let bannerDelivery: BannerDelivery | null = null;
 
 export function setBannerDelivery(deliver: BannerDelivery | null): void {
   bannerDelivery = deliver;
+}
+
+// ---- Banner delivery, Windows/Linux (issue #53) ----------------------------
+// An app-owned always-on-top window at the work area's bottom-right — the
+// umux #118 pattern (like Steam/Discord toasts): borderless, silent, never
+// stealing focus, auto-dismissed by the host page itself. One window holds
+// the whole stack, so several events in quick succession stack vertically
+// instead of overlapping.
+
+/** Events exchanged with the banner window's host page. */
+export const BANNER_SHOW_EVENT = "klepai:banner-show";
+export const BANNER_READY_EVENT = "klepai:banner-ready";
+export const BANNER_ACTIVATE_EVENT = "klepai:banner-activate";
+
+/** One toast on the banner window's stack — an AppNotification plus the
+ * delivery key the host dedupes and dismisses by. */
+export interface BannerToast extends AppNotification {
+  key: number;
+}
+
+const BANNER_WINDOW_LABEL = "notification-banner";
+/** Same bundle, banner host mode (see main.tsx). */
+const BANNER_URL = "index.html?banner=1";
+const BANNER_WIDTH = 340;
+const BANNER_HEIGHT = 280;
+
+let bannerSeq = 0;
+let bannerWindow: WebviewWindow | null = null;
+/** Toasts emitted before the host page finished loading — flushed on its
+ * `banner-ready` handshake. The host dedupes by key, so a toast delivered
+ * live and then flushed again just re-renders itself. */
+const pendingToasts = new Map<number, BannerToast>();
+
+/** Creates (once) and returns the banner window. */
+async function ensureBannerWindow(): Promise<WebviewWindow> {
+  if (bannerWindow) return bannerWindow;
+  let existing = await WebviewWindow.getByLabel(BANNER_WINDOW_LABEL);
+  if (!existing) {
+    existing = new WebviewWindow(BANNER_WINDOW_LABEL, {
+      url: BANNER_URL,
+      title: "Klepai",
+      width: BANNER_WIDTH,
+      height: BANNER_HEIGHT,
+      visible: false,
+      decorations: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      maximizable: false,
+      minimizable: false,
+      focus: false,
+      transparent: true,
+      shadow: false,
+    });
+  }
+  bannerWindow = existing;
+  return existing;
+}
+
+/** Pushes one toast to the banner window. */
+async function pushBanner(content: AppNotification): Promise<void> {
+  try {
+    await ensureBannerWindow();
+    const key = ++bannerSeq;
+    pendingToasts.set(key, { ...content, key });
+    await emit(BANNER_SHOW_EVENT, { key, ...content } satisfies BannerToast);
+  } catch {
+    // A failed banner must never break the run being reported on.
+  }
+}
+
+/** Registers the Windows/Linux banner delivery. Called once from the app
+ * shell; the window is only created on the first accepted notification. */
+export function initBannerDelivery(): void {
+  setBannerDelivery((content) => void pushBanner(content));
+  void listen(BANNER_READY_EVENT, () => {
+    for (const [key, toast] of pendingToasts) {
+      void emit(BANNER_SHOW_EVENT, toast);
+      pendingToasts.delete(key);
+    }
+  });
 }
 
 /** Hands one accepted notification to the platform's delivery layer. */

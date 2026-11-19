@@ -375,4 +375,10 @@
     user-select: none;
     -webkit-font-smoothing: antialiased;
   }
+
+  /* The notification banner window (v0.1.1, issue #53) is transparent —
+     only the toast cards paint; the window surface stays invisible. */
+  body[data-klepai-view="banner"] {
+    background: transparent;
+  }
 }
