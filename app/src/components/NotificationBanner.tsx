@@ -12,11 +12,12 @@
 // decisions about WHETHER to notify live in lib/notifications.ts; the umux
 // split (brain vs. DOM glue) carried over.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   currentMonitor,
   getCurrentWindow,
+  LogicalSize,
   PhysicalPosition,
 } from "@tauri-apps/api/window";
 
@@ -34,9 +35,13 @@ const AUTO_DISMISS_MS = 5000;
 const MARGIN = 16;
 /** At most this many toasts on the stack at once. */
 const STACK_CAP = 3;
+/** The window hugs the stack; never narrower/taller than this even when
+ * momentarily empty (it is hidden then anyway). */
+const MIN_HEIGHT = 40;
 
 export default function NotificationBannerHost() {
   const [toasts, setToasts] = useState<BannerToast[]>([]);
+  const stackRef = useRef<HTMLDivElement>(null);
 
   // Boot: position the window, then subscribe and announce readiness —
   // toasts pushed before this page loaded are flushed by the manager on
@@ -89,14 +94,27 @@ export default function NotificationBannerHost() {
     };
   }, []);
 
-  // The window is visible exactly while the stack is not empty.
-  useEffect(() => {
+  // The window hugs the stack: its height tracks the rendered toasts, then
+  // it is visible exactly while the stack is not empty. Layout effect so the
+  // resize lands BEFORE the first paint at the new stack size — no frame of
+  // dead space above the toasts (the window is always-on-top, so an
+  // oversized body sits over other apps' pixels). CSS px are logical px.
+  useLayoutEffect(() => {
     const appWindow = getCurrentWindow();
-    if (toasts.length > 0) {
-      void appWindow.show();
-    } else {
-      void appWindow.hide();
-    }
+    const contentHeight = stackRef.current?.scrollHeight ?? MIN_HEIGHT;
+    const height = Math.max(MIN_HEIGHT, Math.ceil(contentHeight));
+    void (async () => {
+      try {
+        await appWindow.setSize(new LogicalSize(340, height));
+      } catch {
+        // A refused resize degrades to the fixed-size window — still shown.
+      }
+      if (toasts.length > 0) {
+        void appWindow.show();
+      } else {
+        void appWindow.hide();
+      }
+    })();
   }, [toasts]);
 
   // Auto-dismiss the oldest toast ~5 s after the stack last changed. Each
@@ -118,8 +136,11 @@ export default function NotificationBannerHost() {
   };
 
   return (
-    <div className="flex h-full flex-col justify-end gap-2 p-2">
-      {toasts.slice(-STACK_CAP).map((toast) => (
+    <div className="flex h-full flex-col justify-end">
+      {/* The measured content wrapper — the window resizes to this div's
+          scrollHeight, so it must hold all stack content and nothing else. */}
+      <div ref={stackRef} className="flex w-full flex-col gap-2 p-2">
+        {toasts.slice(-STACK_CAP).map((toast) => (
         <button
           key={toast.key}
           type="button"
@@ -142,6 +163,7 @@ export default function NotificationBannerHost() {
           <p className="mt-1 truncate text-xs text-muted-foreground">{toast.body}</p>
         </button>
       ))}
+      </div>
     </div>
   );
 }

@@ -18,6 +18,7 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-position",
+    "core:window:allow-set-size",
     "core:window:allow-current-monitor",
     "core:window:allow-is-minimized",
     "core:window:allow-unminimize",
