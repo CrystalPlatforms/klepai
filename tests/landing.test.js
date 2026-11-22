@@ -90,7 +90,7 @@ test('landing page is served over HTTP: 200 + text/html', async () => {
 
 // --- Cycle 7: hero call-to-action buttons ----------------------------------
 
-test('hero actions link to the repo and Crystal Studio, opening in a new tab', async () => {
+test('hero actions link to the repo and CrystalPlatforms website, opening in a new tab', async () => {
   const { html } = await fetchPage();
   const anchors = [...html.matchAll(/<a\b[^>]*href=["']([^"']*)["'][^>]*>/gi)].map((m) => ({
     tag: m[0],

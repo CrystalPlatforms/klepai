@@ -66,4 +66,4 @@ new key needs a fresh install. Until a signed release ships a `latest.json`
 asset, **Check for updates** in About simply reports Klepai as up to date.
 That is the expected pre-release state, not a bug.
 
-© Crystal Studio, MIT License
+© CrystalPlatforms, MIT License
