@@ -7,7 +7,37 @@ Klepai is a private, self-hosted LLM manager: a desktop chat app for macOS, Wind
 - **Agent mode**: your server models code in a project folder through built-in tools, with Claude Code and Codex CLI as ready-made extra brains
 - Everything local: SQLite, no accounts, no telemetry
 
-**Status:** Klepai Alpha v.0.0.1 (released) · see [PRD.md](PRD.md)
+**Status:** Klepai Beta v0.1.0 (released) · see [PRD.md](PRD.md)
+
+## Install — ActivatePresto
+
+Klepai ships unsigned (free & open source), so your system blocks the first
+launch once. Skip the click-through — run one command and Klepai starts:
+
+- **macOS** — open `klepai-macos.dmg`, drag Klepai to Applications, then:
+
+  ```sh
+  xattr -cr /Applications/Klepai.app && open /Applications/Klepai.app
+  ```
+
+- **Windows** — in PowerShell (not the old cmd):
+
+  ```powershell
+  Expand-Archive "$env:USERPROFILE\Downloads\klepai-windows.zip" "$env:USERPROFILE\Downloads\klepai-windows" -Force; Get-ChildItem "$env:USERPROFILE\Downloads\klepai-windows" -Recurse | Unblock-File; Start-Process (Get-ChildItem "$env:USERPROFILE\Downloads\klepai-windows" -Recurse -Filter "*-setup.exe").FullName
+  ```
+
+- **Linux** (Ubuntu/Debian):
+
+  ```sh
+  cd ~/Downloads && unzip -o klepai-linux.zip && sudo apt install ./klepai-linux/deb/*.deb
+  ```
+
+  Fedora: `sudo dnf install ~/Downloads/klepai-linux/rpm/*.rpm` · no install
+  at all: `chmod +x ~/Downloads/klepai-linux/appimage/*.AppImage`
+
+The manual way still works: macOS right-click → **Open** (or System Settings →
+Privacy & Security → **Open Anyway**); Windows SmartScreen → **More info →
+Run anyway**.
 
 ## Updates
 

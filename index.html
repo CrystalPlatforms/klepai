@@ -379,6 +379,120 @@
         text-decoration: none;
       }
 
+      /* ActivatePresto: the command block in the first-run list and the
+         post-download dialog — a click selects the whole line, Copy puts it
+         in the clipboard. */
+      .first-run code {
+        display: block;
+        margin: 6px 0 2px;
+        padding: 10px 12px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--primary);
+        font:
+          0.9rem ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        overflow-x: auto;
+        white-space: nowrap;
+        user-select: all;
+      }
+      dialog#after-download {
+        margin: auto;
+        background: var(--card);
+        color: var(--card-foreground);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 28px 30px;
+        width: min(680px, calc(100% - 40px));
+        max-height: 85vh;
+        overflow-y: auto;
+      }
+      dialog#after-download::backdrop {
+        background: rgba(0, 0, 0, 0.65);
+      }
+      dialog#after-download h2 {
+        font-size: 1.3rem;
+        margin: 0 0 12px;
+      }
+      dialog#after-download p {
+        color: var(--muted-foreground);
+        font-size: 0.95rem;
+        margin: 0 0 10px;
+      }
+      dialog#after-download > div > code {
+        display: block;
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 0.85rem;
+        color: var(--foreground);
+        overflow-x: auto;
+        white-space: nowrap;
+        user-select: all;
+      }
+      dialog#after-download p code {
+        color: var(--primary);
+        font:
+          0.9em ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+      }
+      dialog#after-download .dlg-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 10px 0 4px;
+      }
+      dialog#after-download .copy-btn {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 4px 12px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--muted-foreground);
+        background: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      dialog#after-download .copy-btn:hover {
+        color: var(--foreground);
+        border-color: var(--ring);
+      }
+      dialog#after-download .copy-btn.copied {
+        color: var(--primary);
+        border-color: var(--primary);
+      }
+      dialog#after-download .dlg-copied {
+        color: var(--primary);
+        font-size: 0.85rem;
+      }
+      dialog#after-download .dlg-copied[hidden] {
+        display: none;
+      }
+      dialog#after-download form {
+        margin-top: 16px;
+        text-align: right;
+      }
+      dialog#after-download form button {
+        min-height: 44px;
+        padding: 8px 22px;
+        font-weight: 600;
+        color: var(--primary-foreground);
+        background: var(--primary);
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+
       /* Roadmap: every shipped Alpha capability and what's next, one short
          line each. */
       .roadmap {
@@ -610,6 +724,7 @@
           <a
             class="btn btn-primary"
             data-dl
+            data-os="macos"
             href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-macos.dmg"
             aria-label="Download Klepai for macOS"
           >
@@ -631,6 +746,7 @@
           <a
             class="btn"
             data-dl
+            data-os="windows"
             href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-windows.zip"
             aria-label="Download Klepai for Windows"
           >
@@ -652,6 +768,7 @@
           <a
             class="btn"
             data-dl
+            data-os="linux"
             href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-linux.zip"
             aria-label="Download Klepai for Linux"
           >
@@ -923,23 +1040,51 @@
       </section>
 
       <section class="first-run">
-        <h2>First run with unsigned builds</h2>
+        <h2>First run — ActivatePresto</h2>
         <p>
           Klepai is free &amp; open source and ships without a paid code-signing
-          certificate, so your system may ask for confirmation once:
+          certificate, so your system blocks the first launch once. Don't click
+          through the warning — run one command instead, and Klepai starts on
+          its own:
         </p>
         <ul>
           <li>
-            <strong>macOS:</strong> right-click the app → <em>Open</em>, or
-            System Settings → Privacy &amp; Security → <em>Open Anyway</em>.
+            <strong>macOS:</strong> open the DMG, drag Klepai to
+            <em>Applications</em>, then in Terminal:
+            <code
+              >xattr -cr /Applications/Klepai.app &amp;&amp; open
+              /Applications/Klepai.app</code
+            >
+            — it clears the quarantine and launches Klepai right away. (The
+            click-through way — right-click the app → <em>Open</em>, or System
+            Settings → Privacy &amp; Security → <em>Open Anyway</em> — still
+            works.)
           </li>
           <li>
-            <strong>Windows:</strong> on the SmartScreen prompt choose
-            <em>More info</em> → <em>Run anyway</em>.
+            <strong>Windows:</strong> in PowerShell (not the old cmd):
+            <code
+              >Expand-Archive "$env:USERPROFILE\Downloads\klepai-windows.zip"
+              "$env:USERPROFILE\Downloads\klepai-windows" -Force;
+              Get-ChildItem "$env:USERPROFILE\Downloads\klepai-windows"
+              -Recurse | Unblock-File; Start-Process (Get-ChildItem
+              "$env:USERPROFILE\Downloads\klepai-windows" -Recurse -Filter
+              "*-setup.exe").FullName</code
+            >
+            — it unpacks the zip, lifts the SmartScreen block and starts the
+            installer. (Clicking <em>More info</em> → <em>Run anyway</em> on
+            the blue prompt still works.)
           </li>
           <li>
-            <strong>Linux:</strong> AppImage needs <code>chmod +x</code> once;
-            .deb installs normally.
+            <strong>Linux</strong> (Ubuntu/Debian) — the zip carries .deb, .rpm
+            and AppImage; install the .deb with:
+            <code
+              >cd ~/Downloads &amp;&amp; unzip -o klepai-linux.zip &amp;&amp;
+              sudo apt install ./klepai-linux/deb/*.deb</code
+            >
+            Fedora:
+            <code>sudo dnf install ~/Downloads/klepai-linux/rpm/*.rpm</code> ·
+            no install at all:
+            <code>chmod +x ~/Downloads/klepai-linux/appimage/*.AppImage</code>
           </li>
         </ul>
       </section>
@@ -1084,6 +1229,7 @@
           <a
             class="btn btn-primary"
             data-dl
+            data-os="macos"
             href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-macos.dmg"
             aria-label="Download Klepai for macOS"
           >
@@ -1105,6 +1251,7 @@
           <a
             class="btn"
             data-dl
+            data-os="windows"
             href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-windows.zip"
             aria-label="Download Klepai for Windows"
           >
@@ -1126,6 +1273,7 @@
           <a
             class="btn"
             data-dl
+            data-os="linux"
             href="https://github.com/CrystalPlatforms/klepai/releases/latest/download/klepai-linux.zip"
             aria-label="Download Klepai for Linux"
           >
@@ -1155,6 +1303,12 @@
       </section>
     </main>
 
+    <dialog id="after-download">
+      <h2 id="dlg-title"></h2>
+      <div id="dlg-body"></div>
+      <form method="dialog"><button type="submit">Close</button></form>
+    </dialog>
+
     <footer>
       <p>
         <a
@@ -1175,8 +1329,100 @@
       // own download starts immediately and its UI shows real progress).
       // Cross-origin release assets give the page no "finished" signal, so
       // the button comes back after a grace window instead.
+      //
+      // The same click opens the ActivatePresto dialog: the one command that
+      // lifts the unsigned-build block and starts Klepai right away, copied
+      // to the clipboard without a second click.
       (function () {
         var GRACE_MS = 7000;
+        var dlg = document.getElementById("after-download");
+        var dlgTitle = document.getElementById("dlg-title");
+        var dlgBody = document.getElementById("dlg-body");
+        function esc(s) {
+          return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+        function copyText(text, done) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () {});
+          } else {
+            try {
+              var holder = document.createElement("textarea");
+              holder.value = text;
+              holder.setAttribute("readonly", "");
+              holder.style.position = "fixed";
+              holder.style.opacity = "0";
+              document.body.appendChild(holder);
+              holder.select();
+              document.execCommand("copy");
+              document.body.removeChild(holder);
+              done();
+            } catch (e) { /* clipboard unavailable — the user can still select manually */ }
+          }
+        }
+        function markCopied(block) {
+          var btn = block.querySelector("[data-dlg-copy]");
+          btn.classList.add("copied");
+          btn.textContent = "Copied!";
+          var note = block.querySelector(".dlg-copied");
+          if (note) note.hidden = false;
+        }
+        function commandBlock(cmd) {
+          var block = document.createElement("div");
+          block.innerHTML =
+            "<code>" + esc(cmd) + "</code>" +
+            '<div class="dlg-actions">' +
+            '<button class="copy-btn" type="button" data-dlg-copy aria-label="Copy the command">Copy</button>' +
+            '<span class="dlg-copied" hidden>Copied — paste it and press Enter ↵</span>' +
+            "</div>";
+          var btn = block.querySelector("[data-dlg-copy]");
+          btn.addEventListener("click", function () {
+            copyText(cmd, function () { markCopied(block); });
+          });
+          return block;
+        }
+        function openDialog(t, html, autoCmd) {
+          dlgTitle.textContent = t;
+          dlgBody.innerHTML = html;
+          if (autoCmd) {
+            var block = commandBlock(autoCmd);
+            dlgBody.appendChild(block);
+            // The download click is still a user gesture here, so the
+            // command can land in the clipboard without another click.
+            copyText(autoCmd, function () { markCopied(block); });
+          }
+          try {
+            if (typeof dlg.showModal === "function") { dlg.showModal(); return; }
+          } catch (e) { /* fall through to the plain open attribute */ }
+          dlg.setAttribute("open", "");
+        }
+        var thanks =
+          "<p>Your download has started. One more step and Klepai is running.</p>";
+        // Version-less paths and wildcards, so no edit is needed when a
+        // release ships.
+        var activate = {
+          macos: {
+            cmd: "xattr -cr /Applications/Klepai.app && open /Applications/Klepai.app",
+            html:
+              "<p><strong>ActivatePresto</strong> — one command and Klepai runs. Open the DMG, drag Klepai to " +
+              "<em>Applications</em>, then paste this in Terminal and press Enter:</p>",
+          },
+          windows: {
+            cmd:
+              'Expand-Archive "$env:USERPROFILE\\Downloads\\klepai-windows.zip" "$env:USERPROFILE\\Downloads\\klepai-windows" -Force; ' +
+              'Get-ChildItem "$env:USERPROFILE\\Downloads\\klepai-windows" -Recurse | Unblock-File; ' +
+              'Start-Process (Get-ChildItem "$env:USERPROFILE\\Downloads\\klepai-windows" -Recurse -Filter "*-setup.exe").FullName',
+            html:
+              "<p><strong>ActivatePresto</strong> — one command and Klepai runs. When the download finishes, open " +
+              "<strong>PowerShell</strong>, paste this and press Enter — it unpacks the zip, clears the SmartScreen block and starts the installer:</p>",
+          },
+          linux: {
+            cmd: "cd ~/Downloads && unzip -o klepai-linux.zip && sudo apt install ./klepai-linux/deb/*.deb",
+            html:
+              "<p><strong>ActivatePresto</strong> — one command and Klepai runs (Ubuntu/Debian). Paste this in a terminal:</p>" +
+              "<p>Fedora: <code>sudo dnf install ~/Downloads/klepai-linux/rpm/*.rpm</code> · " +
+              "no install at all: <code>chmod +x ~/Downloads/klepai-linux/appimage/*.AppImage</code></p>",
+          },
+        };
         document.querySelectorAll("a[data-dl]").forEach(function (a) {
           var label = a.querySelector(".btn-label");
           var original = label.textContent;
@@ -1193,6 +1439,14 @@
               a.removeAttribute("aria-busy");
               label.textContent = original;
             }, GRACE_MS);
+            var act = activate[a.dataset.os];
+            if (act) {
+              openDialog(
+                "Thanks for downloading Klepai! 🎉",
+                thanks + act.html,
+                act.cmd
+              );
+            }
           });
         });
       })();
