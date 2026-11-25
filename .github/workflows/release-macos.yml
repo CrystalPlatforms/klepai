@@ -1,0 +1,73 @@
+# Release macOS — builds the Apple Silicon .dmg for every published release
+# and attaches it to the release (versioned name + the permanent
+# `klepai-macos.dmg` alias the landing page downloads through).
+#
+# macOS is klepai's hand-validated platform (PRD story 33): the HITL
+# checklist still happens on the owner's Mac, but the SHIPPED dmg no longer
+# has to be hand-built there — this workflow builds it from the tag.
+# The build uses tauri.ci.conf.json, so the dmg is an unsigned Alpha bundle
+# (issue #14: no code signing in Alpha; no updater signature from CI —
+# the signed .app.tar.gz/.sig updater bundle stays an optional owner-side
+# build, exactly like today).
+#
+# workflow_dispatch (manual button) has no release to attach to — it leaves
+# the dmg as a run artifact for test-builds.
+
+name: release-macos
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # jsdom 30 needs Node ≥ 24 (same as ci.yml).
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Frontend tests
+        run: npm ci && npm test
+
+      - name: Build dmg
+        run: npx tauri build --config src-tauri/tauri.ci.conf.json
+
+      - name: Attach dmg to the release (versioned + permanent alias)
+        if: github.event.release.tag_name != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          cp "$DMG" klepai-macos.dmg
+          gh release upload "$TAG" --clobber "$DMG" klepai-macos.dmg \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload dmg as run artifact (manual runs)
+        if: github.event.release.tag_name == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: klepai-macos
+          if-no-files-found: error
+          path: src-tauri/target/release/bundle/dmg/*.dmg
