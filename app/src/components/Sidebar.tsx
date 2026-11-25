@@ -31,6 +31,11 @@ interface SidebarProps {
   /** Conversations whose last generation failed (issue #23) — the error
    * mark outranks the working dot. */
   errorIds: Set<number>;
+  /** Conversations with a pending permission ask (v0.1.1, issue #56) — the
+   * blue needs-input status, visible regardless of the notification toggle
+   * and regardless of which conversation is open. Outranked by the error
+   * mark; outranks the working dot. */
+  needsInputIds: Set<number>;
   open: boolean;
   onSelect: (id: number) => void;
   onCreate: () => void;
@@ -52,6 +57,7 @@ export function Sidebar({
   selectedId,
   streamingIds,
   errorIds,
+  needsInputIds,
   open,
   onSelect,
   onCreate,
@@ -223,6 +229,14 @@ export function Sidebar({
                       >
                         <AgentLoader type="error" dotClassName="h-[2px] w-[2px]" />
                         <span className="sr-only">Error</span>
+                      </span>
+                    ) : needsInputIds.has(conversation.id) ? (
+                      <span
+                        title="Waiting for your decision"
+                        className="shrink-0 text-blue-500"
+                      >
+                        <AgentLoader type="needs-input" dotClassName="h-[2px] w-[2px]" />
+                        <span className="sr-only">Needs input</span>
                       </span>
                     ) : (
                       streamingIds.has(conversation.id) && (

@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { Conversation, SearchHit } from "@/types";
 import { Sidebar } from "@/components/Sidebar";
@@ -8,6 +10,19 @@ import { DetailPane } from "@/components/DetailPane";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { trackAppOpen } from "@/lib/analytics";
+import {
+  LIFECYCLE_EVENT,
+  BANNER_ACTIVATE_EVENT,
+  activateNotificationConversation,
+  buildNotification,
+  deliverNotification,
+  initBannerDelivery,
+  initNativeClickHandling,
+  setNotificationNavigator,
+  shouldNotify,
+  type LifecyclePayload,
+} from "@/lib/notifications";
+import { notificationsEnabled } from "@/lib/settings";
 
 /** A pending "open this conversation scrolled to this message" request. */
 interface JumpTarget {
@@ -28,6 +43,112 @@ export default function App() {
   /** Conversations whose last generation failed (issue #23) — the sidebar
    * marks them with the error loader until the next send clears it. */
   const [errorIds, setErrorIds] = useState<Set<number>>(new Set());
+  /** Conversations with a pending permission ask (v0.1.1, issue #56) — the
+   * sidebar shows the blue needs-input status regardless of the Settings
+   * toggle and regardless of which conversation is open. Driven by the
+   * global lifecycle events, so background conversations show it too. */
+  const [needsInputIds, setNeedsInputIds] = useState<Set<number>>(new Set());
+
+  // ---- Notification decision layer (issue #52) ----------------------------
+  // The global conversation-lifecycle listener decides per event whether to
+  // notify: only when the conversation is in the background (a different
+  // one is on screen, or the window is unfocused/minimized) and the
+  // Settings toggle is on. The decision reads live values through refs so
+  // the listener subscribes once and never misses an event on re-render.
+
+  /** Mirrors the focused state of the Klepai window. */
+  const [windowVisible, setWindowVisible] = useState(true);
+  const selectedIdRef = useRef(selectedId);
+  const windowVisibleRef = useRef(windowVisible);
+  /** Mirrors the Settings toggle (read on the hot event path). */
+  const enabledRef = useRef(notificationsEnabled());
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    windowVisibleRef.current = windowVisible;
+  }, [windowVisible]);
+
+  // Window focus/blur — the payload IS the new focused state.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => setWindowVisible(focused))
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
+  }, []);
+
+  // The Settings toggle broadcasts after every flip (issue #50); re-read
+  // the stored value so the listener always sees the current preference.
+  useEffect(() => {
+    const sync = () => {
+      enabledRef.current = notificationsEnabled();
+    };
+    sync();
+    window.addEventListener("klepai:notifications-changed", sync);
+    return () => window.removeEventListener("klepai:notifications-changed", sync);
+  }, []);
+
+  useEffect(() => {
+    // StrictMode dev double-mount: the first mount's cleanup runs BEFORE its
+    // listen() promise resolves, so the plain `unlisten?.()` cleanup leaks
+    // that listener — every lifecycle event was then handled twice and each
+    // notification went out as two identical banners. The disposed flag
+    // (the NotificationBannerHost pattern) unsubscribes a late-resolved
+    // listener instead of leaking it.
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<LifecyclePayload>(LIFECYCLE_EVENT, async (event) => {
+      const payload = event.payload;
+      // Sidebar needs-input status (issue #56): pure UI state — it tracks
+      // the events no matter what the notification toggle says. Finished
+      // leaves no trace on the card.
+      if (payload.kind === "needs_input" || payload.kind === "needs_input_cleared") {
+        const add = payload.kind === "needs_input";
+        setNeedsInputIds((current) => {
+          if (add ? current.has(payload.conversation_id) : !current.has(payload.conversation_id)) {
+            return current;
+          }
+          const next = new Set(current);
+          if (add) {
+            next.add(payload.conversation_id);
+          } else {
+            next.delete(payload.conversation_id);
+          }
+          return next;
+        });
+      }
+
+      let minimized = false;
+      try {
+        minimized = await getCurrentWindow().isMinimized();
+      } catch {
+        minimized = false;
+      }
+      const decision = {
+        selectedId: selectedIdRef.current,
+        windowVisible: windowVisibleRef.current && !minimized,
+        enabled: enabledRef.current,
+      };
+      if (!shouldNotify(payload, decision)) return;
+      const content = buildNotification(payload);
+      if (content) void deliverNotification(content);
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -44,6 +165,18 @@ export default function App() {
   // One anonymous launch count per production run (issue #31).
   useEffect(() => {
     trackAppOpen();
+  }, []);
+
+  // Register the Windows/Linux banner delivery (issue #53) — the sink is
+  // invoked by the decision layer (issue #52); the window itself is only
+  // created on the first accepted notification.
+  useEffect(() => {
+    const disposeBanner = initBannerDelivery();
+    // Native clicks (macOS, issue #55) must be wired before the first
+    // notification is sent — the plugin only reports clicks for
+    // notifications posted while a listener existed.
+    initNativeClickHandling();
+    return disposeBanner;
   }, []);
 
   const handleCreate = async () => {
@@ -112,19 +245,46 @@ export default function App() {
         next.delete(id);
         return next;
       });
+      setNeedsInputIds((current) => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     } catch (error) {
       console.error("Failed to delete conversation:", error);
     }
   };
 
   /** Opens a conversation by clicking its row — a pending jump for a
-   * different conversation is stale and cleared. */
-  const handleSelect = (id: number) => {
+   * different conversation is stale and cleared. Stable: it is also the
+   * shared click-behavior navigator (issue #54). */
+  const handleSelect = useCallback((id: number) => {
     setJumpTarget((current) =>
       current && current.conversationId !== id ? null : current,
     );
     setSelectedId(id);
-  };
+  }, []);
+
+  // Shared click behavior (issue #54): BOTH deliveries funnel through
+  // activateNotificationConversation — the banner over the
+  // klepai:banner-activate event, the native notification over the
+  // plugin's action callback (issue #55). The navigator is the existing
+  // conversation-switching path, so the behavior is identical everywhere.
+  useEffect(() => {
+    setNotificationNavigator(handleSelect);
+    return () => setNotificationNavigator(null);
+  }, [handleSelect]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ conversationId: number }>(BANNER_ACTIVATE_EVENT, (event) => {
+      void activateNotificationConversation(event.payload.conversationId);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
 
   /** Opens the hit's conversation and asks ChatPane to scroll to it. */
   const handleJumpTo = (hit: SearchHit) => {
@@ -141,6 +301,7 @@ export default function App() {
         selectedId={selectedId}
         streamingIds={streamingIds}
         errorIds={errorIds}
+        needsInputIds={needsInputIds}
         open={sidebarOpen}
         onSelect={handleSelect}
         onCreate={handleCreate}

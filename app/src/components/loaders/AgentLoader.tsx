@@ -21,6 +21,7 @@ export type LoaderType =
   | "helix"
   | "diagonal-swipe"
   | "idle"
+  | "needs-input"
   | "error";
 
 interface AgentLoaderProps {
@@ -150,6 +151,13 @@ const getOpacities = (type: LoaderType, i: number): number | number[] => {
     }
     case "rain":
       return [OFF, ON, OFF, OFF, OFF];
+    // Needs input (v0.1.1, story 44): ALL nine squares pulse in sync —
+    // identical keyframes and identical timing (no per-cell delay) for
+    // every square, so the whole grid breathes as one. No X pattern, no
+    // phase cycling; the color comes from CSS (`bg-current` under a blue
+    // text class at the call site), never orange.
+    case "needs-input":
+      return [OFF, ON, OFF];
     // idle.html / error.html are STATIC marks — a plain value (not a
     // keyframe array) so motion runs no animation at all. Idle is dim,
     // like the gallery's #666 grid.
@@ -211,6 +219,14 @@ const getTransition = (type: LoaderType, i: number): any => {
     case "pulse":
       return {
         duration: 1.5,
+        repeat: Number.POSITIVE_INFINITY,
+        ease: "easeInOut",
+      };
+    // In-sync breathing: every square gets the SAME transition (no delay,
+    // no per-cell variation) so the oscillation never phases apart.
+    case "needs-input":
+      return {
+        duration: 1.1,
         repeat: Number.POSITIVE_INFINITY,
         ease: "easeInOut",
       };
