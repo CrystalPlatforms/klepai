@@ -49,8 +49,22 @@ jobs:
       - name: Frontend tests
         run: npm ci && npm test
 
-      - name: Build dmg
-        run: npx tauri build --config src-tauri/tauri.ci.conf.json
+      # Updater feed: with the TAURI_SIGNING_PRIVATE_KEY secret present this
+      # is a FULL signed build (Klepai.app.tar.gz + .sig + latest.json land on
+      # the release and installed macOS apps detect the update). Without the
+      # secret it falls back to the unsigned Alpha dmg (tauri.ci.conf.json).
+      - name: Build (signed updater feed when the secret exists)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "signing secret present — full signed build (updater feed on)"
+            npx tauri build
+          else
+            echo "no signing secret — unsigned Alpha build (tauri.ci.conf.json)"
+            npx tauri build --config src-tauri/tauri.ci.conf.json
+          fi
 
       - name: Attach dmg to the release (versioned + permanent alias)
         if: github.event.release.tag_name != ''
@@ -62,6 +76,42 @@ jobs:
           DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
           cp "$DMG" klepai-macos.dmg
           gh release upload "$TAG" --clobber "$DMG" klepai-macos.dmg \
+            --repo "$GITHUB_REPOSITORY"
+
+      # When the signed build ran, this also publishes the updater feed:
+      # Klepai.app.tar.gz + .sig + a generated latest.json for darwin-aarch64.
+      - name: Attach updater feed to the release (signed builds only)
+        if: github.event.release.tag_name != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          UPD_TAR=$(ls src-tauri/target/release/bundle/macos/*.app.tar.gz 2>/dev/null | head -1 || true)
+          if [ -z "$UPD_TAR" ]; then
+            echo "unsigned build — no updater feed to publish"
+            exit 0
+          fi
+          SIG="$UPD_TAR.sig"
+          VERSION="${TAG#v}"
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.TAG;
+            const sig = fs.readFileSync(process.argv[1], "utf8").trim();
+            const feed = {
+              version: tag.replace(/^v/, ""),
+              notes: "Release " + tag,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "darwin-aarch64": {
+                  signature: sig,
+                  url: "https://github.com/CrystalPlatforms/klepai/releases/download/" + tag + "/Klepai.app.tar.gz",
+                },
+              },
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(feed, null, 2));
+          ' "$SIG"
+          gh release upload "$TAG" --clobber "$UPD_TAR" "$SIG" latest.json \
             --repo "$GITHUB_REPOSITORY"
 
       - name: Upload dmg as run artifact (manual runs)
