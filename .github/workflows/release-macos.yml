@@ -10,8 +10,9 @@
 # the signed .app.tar.gz/.sig updater bundle stays an optional owner-side
 # build, exactly like today).
 #
-# workflow_dispatch (manual button) has no release to attach to — it leaves
-# the dmg as a run artifact for test-builds.
+# workflow_dispatch (manual button) has no release to attach to unless a
+# `tag` input is given (e.g. re-feeding an existing release) — without it
+# the dmg stays a run artifact for test-builds.
 
 name: release-macos
 
@@ -19,6 +20,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach to (e.g. v0.1.1). Empty = build only, dmg as artifact.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -30,6 +36,10 @@ jobs:
     defaults:
       run:
         working-directory: app
+    env:
+      # Release to attach to: the release event carries its own tag; a manual
+      # run takes it from the `tag` input (empty = artifact-only test build).
+      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,10 +77,9 @@ jobs:
           fi
 
       - name: Attach dmg to the release (versioned + permanent alias)
-        if: github.event.release.tag_name != ''
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
           DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
@@ -81,10 +90,9 @@ jobs:
       # When the signed build ran, this also publishes the updater feed:
       # Klepai.app.tar.gz + .sig + a generated latest.json for darwin-aarch64.
       - name: Attach updater feed to the release (signed builds only)
-        if: github.event.release.tag_name != ''
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
           UPD_TAR=$(ls src-tauri/target/release/bundle/macos/*.app.tar.gz 2>/dev/null | head -1 || true)
@@ -115,7 +123,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
 
       - name: Upload dmg as run artifact (manual runs)
-        if: github.event.release.tag_name == ''
+        if: env.TAG == ''
         uses: actions/upload-artifact@v4
         with:
           name: klepai-macos
