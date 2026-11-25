@@ -1,6 +1,6 @@
 [package]
 name = "klepai"
-version = "0.1.0"
+version = "0.1.1"
 description = "Klepai — self-hosted LLM manager"
 authors = ["CrystalPlatforms"]
 edition = "2021"
