@@ -70,4 +70,6 @@ jobs:
         with:
           name: klepai-macos
           if-no-files-found: error
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          # upload-artifact does NOT inherit defaults.run.working-directory —
+          # the path is relative to the repo root (the app lives in app/).
+          path: app/src-tauri/target/release/bundle/dmg/*.dmg
