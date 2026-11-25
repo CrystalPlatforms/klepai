@@ -1,0 +1,269 @@
+# Release — builds all three platforms for every published release and
+# attaches the installers DIRECTLY to the release (umux model, 2026-11-25):
+#   macOS:   Klepai_*.dmg + permanent alias klepai-macos.dmg + the signed
+#            updater feed (Klepai.app.tar.gz + .sig + latest.json,
+#            darwin-aarch64) whenever the signing secrets exist
+#   Windows: NSIS installer (Klepai_*_x64-setup.exe) + alias klepai_x64-setup.exe
+#            (.msi is deliberately skipped — one predictable artifact, like umux)
+#   Linux:   .deb + .rpm + .AppImage + aliases klepai_amd64.deb / klepai_x86_64.rpm /
+#            klepai_amd64.AppImage
+#
+# The landing page links the version-less aliases through GitHub's
+# `releases/latest/download/<name>` pattern, so no manual fix-up is ever
+# needed after a release (--clobber refreshes the aliases each release).
+#
+# The updater feed stays macOS-only (issue #14, Alpha): the Windows and
+# Linux jobs build through tauri.ci.conf.json (createUpdaterArtifacts off)
+# and get no signing secret.
+#
+# workflow_dispatch (manual button) has no release to attach to unless a
+# `tag` input is given (e.g. re-feeding an existing release) — without it
+# the packages stay run artifacts for test-builds.
+
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach to (e.g. v0.1.2). Empty = build only, packages as artifacts.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    env:
+      # Release to attach to: the release event carries its own tag; a manual
+      # run takes it from the `tag` input (empty = artifact-only test build).
+      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # jsdom 30 needs Node ≥ 24 (same as ci.yml).
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Frontend tests
+        run: npm ci && npm test
+
+      # Signed full build when TAURI_SIGNING_PRIVATE_KEY exists; unsigned
+      # Alpha fallback (tauri.ci.conf.json) otherwise.
+      - name: Build (signed updater feed when the secret exists)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "signing secret present — full signed build (updater feed on)"
+            npx tauri build
+          else
+            echo "no signing secret — unsigned Alpha build (tauri.ci.conf.json)"
+            npx tauri build --config src-tauri/tauri.ci.conf.json
+          fi
+
+      - name: Attach dmg to the release (versioned + permanent alias)
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          cp "$DMG" klepai-macos.dmg
+          gh release upload "$TAG" --clobber "$DMG" klepai-macos.dmg \
+            --repo "$GITHUB_REPOSITORY"
+
+      # When the signed build ran, this also publishes the updater feed:
+      # Klepai.app.tar.gz + .sig + a generated latest.json for darwin-aarch64.
+      - name: Attach updater feed to the release (signed builds only)
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPD_TAR=$(ls src-tauri/target/release/bundle/macos/*.app.tar.gz 2>/dev/null | head -1 || true)
+          if [ -z "$UPD_TAR" ]; then
+            echo "unsigned build — no updater feed to publish"
+            exit 0
+          fi
+          SIG="$UPD_TAR.sig"
+          VERSION="${TAG#v}"
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.TAG;
+            const sig = fs.readFileSync(process.argv[1], "utf8").trim();
+            const feed = {
+              version: tag.replace(/^v/, ""),
+              notes: "Release " + tag,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "darwin-aarch64": {
+                  signature: sig,
+                  url: "https://github.com/CrystalPlatforms/klepai/releases/download/" + tag + "/Klepai.app.tar.gz",
+                },
+              },
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(feed, null, 2));
+          ' "$SIG"
+          gh release upload "$TAG" --clobber "$UPD_TAR" "$SIG" latest.json \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload dmg as run artifact (manual runs)
+        if: env.TAG == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: klepai-macos
+          if-no-files-found: error
+          # upload-artifact does NOT inherit defaults.run.working-directory —
+          # the path is relative to the repo root (the app lives in app/).
+          path: app/src-tauri/target/release/bundle/dmg/*.dmg
+
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install Tauri v2 system dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: app
+
+      - name: Build Linux installers and attach to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The app lives in app/ (klepai layout), unlike umux's repo root.
+          projectPath: app
+          # Empty on manual runs without a tag — tauri-action then skips the
+          # upload and the packages stay run artifacts.
+          tagName: ${{ env.TAG }}
+          releaseName: ${{ github.event.release.name }}
+          releaseDraft: false
+          prerelease: false
+          # Alpha bundles: updater artifacts off (issue #14). Default Linux
+          # bundles = .deb + .rpm + .AppImage.
+          args: --config src-tauri/tauri.ci.conf.json
+
+      # Version-less aliases for the landing page (umux pattern): the landing
+      # links `releases/latest/download/<alias>`, --clobber refreshes the
+      # aliases on every release.
+      - name: Attach version-less aliases for the landing (Linux)
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUNDLE=app/src-tauri/target/release/bundle
+          cp "$BUNDLE"/appimage/Klepai_*_amd64.AppImage klepai_amd64.AppImage
+          cp "$BUNDLE"/deb/Klepai_*_amd64.deb           klepai_amd64.deb
+          cp "$BUNDLE"/rpm/Klepai-*.x86_64.rpm          klepai_x86_64.rpm
+          gh release upload "$TAG" --clobber \
+            klepai_amd64.AppImage klepai_amd64.deb klepai_x86_64.rpm \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload packages as run artifacts (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: klepai-linux
+          if-no-files-found: error
+          path: |
+            app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/rpm/*.rpm
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: app
+
+      # One predictable artifact: the NSIS installer (umux convention).
+      - name: Build NSIS installer and attach to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ env.TAG }}
+          releaseName: ${{ github.event.release.name }}
+          releaseDraft: false
+          prerelease: false
+          # Alpha bundle: updater artifacts off (issue #14). NSIS only.
+          args: --config src-tauri/tauri.ci.conf.json --bundles nsis
+
+      - name: Attach version-less alias for the landing (Windows)
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          if (-not $env:TAG) {
+            Write-Host "No release tag — skipping alias."
+            exit 0
+          }
+          $exe = Get-ChildItem "app/src-tauri/target/release/bundle/nsis/Klepai_*_x64-setup.exe" |
+            Select-Object -First 1
+          if (-not $exe) { throw "NSIS installer not found in bundle/nsis/" }
+          Copy-Item $exe.FullName klepai_x64-setup.exe
+          gh release upload $env:TAG --clobber klepai_x64-setup.exe `
+            --repo $env:GITHUB_REPOSITORY
+
+      - name: Upload packages as run artifacts (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: klepai-windows
+          if-no-files-found: error
+          path: app/src-tauri/target/release/bundle/nsis/*.exe
